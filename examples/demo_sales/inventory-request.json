@@ -1,0 +1,8 @@
+{
+  "action": "inventory",
+  "tables": {
+    "Orders": {"file": "examples/demo_sales/orders.csv"},
+    "Customers": {"file": "examples/demo_sales/customers.csv"},
+    "Products": {"file": "examples/demo_sales/products.csv"}
+  }
+}

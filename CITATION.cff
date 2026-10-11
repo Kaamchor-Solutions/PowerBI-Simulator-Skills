@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "Draft citation metadata for a local, unpublished package; this is not release authorization."
+title: "Power BI Simulator Skills"
+type: software
+authors:
+  - name: "Kaamchor Solutions"
+version: 0.1.0
+url: "https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills"
+repository-code: "https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills"
+abstract: "Proposed sibling of https://github.com/Kaamchor-Solutions/SPSS-Simulator-Skills; intended destination https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills. Local unpublished draft, not yet released."

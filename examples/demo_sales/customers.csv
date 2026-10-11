@@ -1,0 +1,6 @@
+CustomerID,CustomerName,Segment,Region
+C01,Northwind Retail,Retail,West
+C02,Contoso Works,Small Business,East
+C03,Fabrikam Group,Enterprise,West
+C04,Adventure Outfitters,Small Business,South
+C05,Wide World Imports,Retail,North

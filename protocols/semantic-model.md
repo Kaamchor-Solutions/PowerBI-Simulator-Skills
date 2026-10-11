@@ -1,0 +1,9 @@
+# Semantic model protocol
+
+1. **State grain first.** Write one sentence defining what one row represents for every fact and dimension table. Identify candidate keys and whether they are stable and unique.
+2. **Separate facts and dimensions.** Facts contain events/transactions and additive or semi-additive measures; dimensions carry descriptive attributes used for slicing. Avoid treating every source as a separate fact without a grain check.
+3. **Declare each relationship.** Record one-side table/key, many-side table/foreign key, data types, cardinality, active/inactive status, and default direction. Prefer a star schema and single-direction dimension-to-fact filtering unless there is a justified requirement.
+4. **Audit before use.** Run `model_audit` with explicit `one_table`, `one_column`, `many_table`, and `many_column` entries. Resolve duplicate or null one-side keys and orphan foreign keys before interpreting a grouped result. Null many-side keys are reported but may remain unlinked.
+5. **Handle dates deliberately.** Check date-only versus timestamp values, locale, timezone, fiscal calendar, holidays, and role-playing dates. A proposed calendar table must have one row per date and a unique continuous key; a date relationship is not inferred automatically by this helper.
+6. **Surface ambiguity.** For many-to-many, bridge tables, multiple paths, inactive relationships, bidirectional filters, slowly changing dimensions, or composite keys, explain alternatives and ask when the business meaning is unclear. Do not simplify away ambiguous filter behavior.
+7. **Document the result.** Provide a table-grain summary and relationship map with assumptions, unresolved quality issues, and recommended tests. The helper audits only directly declared key integrity; it does not implement Power BI relationship/filter semantics.

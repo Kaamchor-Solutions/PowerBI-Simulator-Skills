@@ -1,0 +1,17 @@
+{
+  "action": "aggregate",
+  "tables": {
+    "Orders": {"file": "examples/demo_sales/orders.csv"},
+    "Customers": {"file": "examples/demo_sales/customers.csv"},
+    "Products": {"file": "examples/demo_sales/products.csv"}
+  },
+  "relationships": [
+    {"one_table": "Customers", "one_column": "CustomerID", "many_table": "Orders", "many_column": "CustomerID"},
+    {"one_table": "Products", "one_column": "ProductID", "many_table": "Orders", "many_column": "ProductID"}
+  ],
+  "fact_table": "Orders",
+  "filters": [{"table": "Customers", "column": "Region", "op": "eq", "value": "West"}],
+  "measures": [
+    {"name": "Net Sales", "op": "sum_expression", "expression": "Quantity * UnitPrice * (1 - DiscountPct)"}
+  ]
+}

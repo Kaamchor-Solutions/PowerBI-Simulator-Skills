@@ -1,0 +1,29 @@
+# Local/private data and analysis outputs
+*.pbix
+*.pbip
+*.pbit
+*.xlsx
+*.xls
+*.parquet
+*.sav
+private-data/
+local-data/
+results/
+output/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+secrets.json
+credentials.json
+
+# Python/editor artifacts
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.coverage
+.venv/
+venv/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,2 @@
+# Needed only when the helper reads .xlsx workbooks; CSV/TSV support uses Python's standard library.
+openpyxl>=3.1

@@ -10,13 +10,72 @@ import json
 import math
 import sys
 from collections import Counter, defaultdict
-from decimal import Decimal, InvalidOperation
+from decimal import (
+    Clamped,
+    Decimal,
+    DecimalException,
+    DivisionByZero,
+    Inexact,
+    InvalidOperation,
+    MAX_EMAX,
+    MIN_EMIN,
+    Overflow,
+    Rounded,
+    Subnormal,
+    Underflow,
+    localcontext,
+)
 from pathlib import Path
 from typing import Any
 
 
 class RequestError(ValueError):
     """A request or source file is invalid or outside the helper's scope."""
+
+
+# Addition and multiplication of finite Decimal inputs are exact unless the
+# active context is too small. Bound pathological exponent/alignment requests
+# so an untrusted input cannot demand unbounded memory for one arithmetic step.
+_MAX_EXACT_PRECISION = 100_000
+_DIVISION_PRECISION = 50
+_MAX_JSON_NUMBER_TOKEN_LENGTH = 100_000
+
+
+def _reject_json_constant(token: str):
+    raise RequestError(f"Non-standard JSON numeric constant {token!r} is not allowed")
+
+
+def _parse_json_decimal(token: str) -> Decimal:
+    if len(token) > _MAX_JSON_NUMBER_TOKEN_LENGTH:
+        raise RequestError("JSON number token exceeds the 100,000-character limit")
+    try:
+        value = Decimal(token)
+    except (InvalidOperation, ValueError) as exc:
+        raise RequestError("JSON decimal number is outside the supported Decimal range") from exc
+    if not value.is_finite():
+        raise RequestError("JSON number must be finite")
+    return value
+
+
+def _parse_json_integer(token: str) -> int | Decimal:
+    if len(token) > _MAX_JSON_NUMBER_TOKEN_LENGTH:
+        raise RequestError("JSON number token exceeds the 100,000-character limit")
+    try:
+        return int(token)
+    except ValueError:
+        # Python limits conversion of very long integer strings. Preserve those
+        # values as Decimal so numeric filters stay exact without a traceback.
+        return _parse_json_decimal(token)
+
+
+def load_json(handle) -> Any:
+    """Load JSON without converting decimal number tokens through binary float."""
+    return json.load(
+        handle,
+        parse_int=_parse_json_integer,
+        parse_float=_parse_json_decimal,
+        parse_constant=_reject_json_constant,
+    )
 
 
 class TableRows(list[dict[str, Any]]):
@@ -46,7 +105,11 @@ def _json_value(value: Any) -> Any:
         if not value.is_finite():
             return None
         if value == value.to_integral_value():
-            return int(value)
+            integer_digits = value.adjusted() + 1 if not value.is_zero() else 1
+            get_int_limit = getattr(sys, "get_int_max_str_digits", None)
+            int_string_limit = (get_int_limit() if get_int_limit is not None else 4_300) or 4_300
+            if integer_digits <= int_string_limit:
+                return int(value)
         return value
     if isinstance(value, float) and not math.isfinite(value):
         return None
@@ -148,8 +211,9 @@ def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
             from openpyxl import load_workbook
         except ImportError as exc:
             raise RequestError("Reading .xlsx requires openpyxl; install scripts/requirements.txt") from exc
-        workbook = load_workbook(path, read_only=True, data_only=True)
+        workbook = None
         try:
+            workbook = load_workbook(path, read_only=True, data_only=True)
             sheet = spec.get("sheet", 0)
             if isinstance(sheet, str):
                 if sheet not in workbook.sheetnames:
@@ -167,8 +231,13 @@ def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
             except StopIteration as exc:
                 raise RequestError(f"Excel sheet is empty: {path}") from exc
             return _headers_and_rows(headers, list(iterator), table_name)
+        except RequestError:
+            raise
+        except Exception as exc:
+            raise RequestError(f"Could not read Excel workbook {path}: {exc}") from exc
         finally:
-            workbook.close()
+            if workbook is not None:
+                workbook.close()
     raise RequestError(f"Unsupported file for {table_name!r}: {suffix}. Supported: .csv, .tsv, .tab, .xlsx")
 
 
@@ -188,7 +257,7 @@ def _decimal(value: Any, label: str) -> Decimal | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        return Decimal(int(value))
+        raise RequestError(f"Boolean value is not numeric for {label}: {value!r}")
     try:
         number = Decimal(str(value).strip())
     except (InvalidOperation, ValueError) as exc:
@@ -196,6 +265,70 @@ def _decimal(value: Any, label: str) -> Decimal | None:
     if not number.is_finite():
         raise RequestError(f"Non-finite numeric value for {label}: {value!r}")
     return number
+
+
+def _with_decimal_context(operation, precision: int) -> Decimal:
+    if precision > _MAX_EXACT_PRECISION:
+        raise RequestError(
+            f"Exact arithmetic would require more than {_MAX_EXACT_PRECISION:,} digits"
+        )
+    try:
+        with localcontext() as context:
+            context.prec = max(1, precision)
+            context.Emax = MAX_EMAX
+            context.Emin = MIN_EMIN
+            # Results must not depend on ambient trap configuration. Exact
+            # operations may signal Rounded/Subnormal without losing digits;
+            # division intentionally rounds to the documented 50 digits.
+            for signal in (Clamped, Inexact, Rounded, Subnormal, Underflow):
+                context.traps[signal] = False
+            for signal in (DivisionByZero, InvalidOperation, Overflow):
+                context.traps[signal] = True
+            return operation()
+    except DecimalException as exc:
+        raise RequestError("Numeric result exceeds the supported Decimal range") from exc
+
+
+def _decimal_add(left: Decimal, right: Decimal) -> Decimal:
+    if left.is_zero():
+        return right
+    if right.is_zero():
+        return left
+    left_tuple, right_tuple = left.as_tuple(), right.as_tuple()
+    base_exponent = min(left_tuple.exponent, right_tuple.exponent)
+    precision = max(
+        len(left_tuple.digits) + left_tuple.exponent - base_exponent,
+        len(right_tuple.digits) + right_tuple.exponent - base_exponent,
+    ) + 1
+    return _with_decimal_context(lambda: left + right, precision)
+
+
+def _decimal_subtract(left: Decimal, right: Decimal) -> Decimal:
+    if right.is_zero():
+        return left
+    return _decimal_add(left, right.copy_negate())
+
+
+def _decimal_multiply(left: Decimal, right: Decimal) -> Decimal:
+    if left.is_zero() or right.is_zero():
+        return Decimal(0)
+    precision = len(left.as_tuple().digits) + len(right.as_tuple().digits)
+    return _with_decimal_context(lambda: left * right, precision)
+
+
+def _decimal_sum(values: list[Decimal]) -> Decimal:
+    total = Decimal(0)
+    for value in values:
+        total = _decimal_add(total, value)
+    return total
+
+
+def _decimal_divide(numerator: Decimal, denominator: Decimal) -> Decimal:
+    if denominator.is_zero():
+        raise RequestError("Division by zero")
+    return _with_decimal_context(
+        lambda: numerator / denominator, _DIVISION_PRECISION
+    )
 
 
 def _parse_iso_date(value: Any) -> bool:
@@ -385,6 +518,19 @@ def _compile_expression(expression: Any, fact_columns: set[str]):
     except SyntaxError as exc:
         raise RequestError(f"Invalid arithmetic expression: {exc.msg}") from exc
     allowed_binary = (ast.Add, ast.Sub, ast.Mult, ast.Div)
+    literals: dict[int, Decimal] = {}
+
+    def numeric_literal(node: ast.Constant) -> Decimal:
+        if isinstance(node.value, int):
+            return Decimal(node.value)
+        source = ast.get_source_segment(expression, node)
+        try:
+            value = Decimal(source) if source is not None else Decimal(str(node.value))
+        except (InvalidOperation, ValueError) as exc:
+            raise RequestError("Invalid numeric literal in arithmetic expression") from exc
+        if not value.is_finite():
+            raise RequestError("Arithmetic expression numeric literals must be finite")
+        return value
 
     def check(node: ast.AST) -> None:
         if isinstance(node, ast.Expression):
@@ -398,6 +544,7 @@ def _compile_expression(expression: Any, fact_columns: set[str]):
             if node.id not in fact_columns:
                 raise RequestError(f"Expression references unknown fact column {node.id!r}")
         elif isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            literals[id(node)] = numeric_literal(node)
             return
         else:
             raise RequestError("Expressions may use only column names, numeric constants, +, -, *, /, and unary +/-; functions and code execution are not supported")
@@ -408,28 +555,28 @@ def _compile_expression(expression: Any, fact_columns: set[str]):
         if isinstance(node, ast.Expression):
             return evaluate_node(node.body, row)
         if isinstance(node, ast.Constant):
-            return Decimal(str(node.value))
+            return literals[id(node)]
         if isinstance(node, ast.Name):
             return _decimal(row.get(node.id), f"expression column {node.id}")
         if isinstance(node, ast.UnaryOp):
             value = evaluate_node(node.operand, row)
             if value is None:
                 return None
-            return value if isinstance(node.op, ast.UAdd) else -value
+            return value if isinstance(node.op, ast.UAdd) else value.copy_negate()
         if isinstance(node, ast.BinOp):
             left, right = evaluate_node(node.left, row), evaluate_node(node.right, row)
             if left is None or right is None:
                 return None
             if isinstance(node.op, ast.Add):
-                return left + right
+                return _decimal_add(left, right)
             if isinstance(node.op, ast.Sub):
-                return left - right
+                return _decimal_subtract(left, right)
             if isinstance(node.op, ast.Mult):
-                return left * right
+                return _decimal_multiply(left, right)
             if isinstance(node.op, ast.Div):
                 if right == 0:
                     raise RequestError("Division by zero in sum_expression")
-                return left / right
+                return _decimal_divide(left, right)
         raise RequestError("Unsupported arithmetic expression")
 
     return lambda row: evaluate_node(tree, row)
@@ -511,7 +658,7 @@ def _measure_value(
                 skipped += 1
             else:
                 values.append(value)
-        result = sum(values, Decimal(0)) if values else None
+        result = _decimal_sum(values) if values else None
         return _json_value(result), {"rows_considered": len(rows), "values_used": len(values), "blank_or_skipped": skipped}
     allowed = {"sum", "mean", "min", "max", "count_nonblank", "distinct_count"}
     if operation not in allowed:
@@ -527,9 +674,9 @@ def _measure_value(
     if not numbers:
         result = None
     elif operation == "sum":
-        result = sum(numbers, Decimal(0))
+        result = _decimal_sum(numbers)
     elif operation == "mean":
-        result = sum(numbers, Decimal(0)) / Decimal(len(numbers))
+        result = _decimal_divide(_decimal_sum(numbers), Decimal(len(numbers)))
     elif operation == "min":
         result = min(numbers)
     else:
@@ -715,7 +862,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         with config_path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
+            config = load_json(handle)
         if target:
             ensure_output_safe(target, config_path, config)
         result = run_request(config)
@@ -727,8 +874,12 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = 0
     output = format_markdown(result) if args.format == "markdown" else _json_dumps(result, indent=2)
     if target and exit_code == 0:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(output + ("" if output.endswith("\n") else "\n"), encoding="utf-8")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(output + ("" if output.endswith("\n") else "\n"), encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            print(f"Error writing output {target}: {exc}", file=sys.stderr)
+            return 2
     else:
         print(output)
     return exit_code

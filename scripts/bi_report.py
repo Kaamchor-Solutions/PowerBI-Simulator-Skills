@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     target = Path(args.output).expanduser()
     try:
         with config_path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
+            config = analyze.load_json(handle)
         analyze.ensure_output_safe(target, config_path, config)
         report = build_report(config)
         target.parent.mkdir(parents=True, exist_ok=True)

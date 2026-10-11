@@ -43,7 +43,7 @@ def evaluate_case(case: dict[str, Any], response: str | None) -> tuple[str, list
     for index, pattern in enumerate(case["forbidden"], start=1):
         if re.search(pattern, response) is not None:
             problems.append(f"Matched forbidden behavior check {index}")
-    return ("PASS", []) if not problems else ("FAIL", problems)
+    return ("PATTERN_PASS", []) if not problems else ("FAIL", problems)
 
 
 def score_responses(cases: list[dict[str, Any]], responses: dict[str, Any]) -> list[tuple[str, str, list[str]]]:
@@ -80,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
             responses = json.load(handle)
         if not isinstance(responses, dict):
             raise ValueError("Responses JSON must be an object mapping case IDs to strings")
+        unknown_ids = sorted(set(responses) - {case["id"] for case in cases})
+        if unknown_ids:
+            raise ValueError(f"Responses contain unknown case IDs: {unknown_ids}")
         results = score_responses(cases, responses)
     except (OSError, json.JSONDecodeError, ValueError, re.error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -87,8 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     for case_id, status, reasons in results:
         suffix = "" if not reasons else " — " + "; ".join(reasons)
         print(f"{status:7} {case_id}{suffix}")
-    passed = sum(status == "PASS" for _, status, _ in results)
-    print(f"\n{passed}/{len(results)} cases passed. Review failures and a sample of passes manually; regex checks are not semantic proof.")
+    passed = sum(status == "PATTERN_PASS" for _, status, _ in results)
+    print(f"\n{passed}/{len(results)} pattern checks passed. A PATTERN_PASS is not a semantic judgment or proof; manually review every full response, including passes.")
     return 0 if passed == len(results) else 1
 
 

@@ -20,4 +20,4 @@ Do not describe the project as Microsoft Power BI or a replacement. Label DAX/M 
 
 ## Pull requests
 
-Explain the user problem, changes, tests run, limitations, and any effect on the JSON contract. Preserve backward compatibility where practical; if a field or behavior changes, update the runtime reference and sample output. The public-release license is pending approval; the current [`LICENSE`](LICENSE) file is a status notice and grants no distribution rights. Do not treat this local draft as an approved open-source release. See [`docs/release-review.md`](docs/release-review.md) for release status.
+Explain the user problem, changes, tests run, limitations, and any effect on the JSON contract. Preserve backward compatibility where practical; if a field or behavior changes, update the runtime reference and sample output. This project is distributed under the MIT License; see [`LICENSE`](LICENSE) and [`docs/release-review.md`](docs/release-review.md) for the release status.

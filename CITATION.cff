@@ -1,10 +1,12 @@
 cff-version: 1.2.0
-message: "Draft citation metadata for a local, unpublished package; this is not release authorization."
+message: "If you use Power BI Simulator Skills, please cite it as below."
 title: "Power BI Simulator Skills"
 type: software
 authors:
   - name: "Kaamchor Solutions"
 version: 0.1.0
+date-released: 2026-10-12
+license: MIT
 url: "https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills"
 repository-code: "https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills"
-abstract: "Proposed sibling of https://github.com/Kaamchor-Solutions/SPSS-Simulator-Skills; intended destination https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills. Local unpublished draft, not yet released."
+abstract: "A provider-neutral Agent Skill for Power BI-style analytics, paired with a deterministic Python helper. Companion to https://github.com/Kaamchor-Solutions/SPSS-Simulator-Skills."

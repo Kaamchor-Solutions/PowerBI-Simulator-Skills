@@ -2,9 +2,9 @@
 
 This repository contains two separate parts: `SKILL.md` tells an LLM how to follow the workflow, while `scripts/` performs only the explicitly supported data checks and aggregates. Installing instructions does not grant an LLM file access, Python, connectors, persistent memory, Microsoft Power BI, or DAX/M execution. Provider behavior and project features can vary by plan and change over time.
 
-## Use a local checkout or an approved release
+## Use a local checkout
 
-This package is currently an unpublished draft. Until the rights holder separately approves the exact package and license and publishes it, use the provided local checkout/archive rather than assuming the proposed GitHub destination is available. After an approved release, the intended clone commands are:
+The public repository is distributed under the MIT License. Clone it and install the optional helper dependency as follows:
 
 ```bash
 git clone https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills.git

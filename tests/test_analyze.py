@@ -1,15 +1,19 @@
 """Smoke and contract tests for the constrained helper (not Power BI parity tests)."""
 import csv
+from contextlib import redirect_stderr
+import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
-from decimal import Decimal
+from decimal import Decimal, Inexact, Rounded, Subnormal, localcontext
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import analyze  # noqa: E402
+import bi_report  # noqa: E402
 
 DEMO = ROOT / "examples" / "demo_sales"
 TABLES = {
@@ -73,6 +77,61 @@ class AnalyzeTests(unittest.TestCase):
         by_category = {row["group"]["Products.Category"]: row["measures"]["Net Sales"] for row in result["groups"]}
         self.assertEqual(by_category, {"Accessories": 635, "Computers": 595, "Software": 475})
 
+    def test_all_aggregate_operations_and_in_neq_filters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "measures.csv"
+            path.write_text("Amount,Group\n1,A\n2,B\n2,B\n,B\n", encoding="utf-8")
+            measures = [
+                {"name": "Rows", "op": "count_rows"},
+                {"name": "Known", "op": "count_nonblank", "table": "Sales", "column": "Amount"},
+                {"name": "Distinct", "op": "distinct_count", "table": "Sales", "column": "Amount"},
+                {"name": "Sum", "op": "sum", "table": "Sales", "column": "Amount"},
+                {"name": "Mean", "op": "mean", "table": "Sales", "column": "Amount"},
+                {"name": "Min", "op": "min", "table": "Sales", "column": "Amount"},
+                {"name": "Max", "op": "max", "table": "Sales", "column": "Amount"},
+                {"name": "Expression", "op": "sum_expression", "expression": "Amount * 2"},
+            ]
+            common = {
+                "action": "aggregate",
+                "tables": {"Sales": {"file": str(path)}},
+                "fact_table": "Sales",
+                "measures": measures,
+            }
+            for filter_item in (
+                {"table": "Sales", "column": "Group", "op": "in", "value": ["B"]},
+                {"table": "Sales", "column": "Group", "op": "neq", "value": "A"},
+            ):
+                result = analyze.run_request({**common, "filters": [filter_item]})
+                self.assertTrue(result["valid"])
+                self.assertEqual(result["rows_used"], 3)
+                self.assertEqual(result["totals"], {
+                    "Rows": 3,
+                    "Known": 2,
+                    "Distinct": 1,
+                    "Sum": 4,
+                    "Mean": 2,
+                    "Min": 2,
+                    "Max": 2,
+                    "Expression": 8,
+                })
+                self.assertEqual(result["measure_audit"]["Expression"]["blank_or_skipped"], 1)
+
+    def test_tsv_and_tab_sources_are_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            results = {}
+            for suffix in (".tsv", ".tab"):
+                path = Path(temp) / f"source{suffix}"
+                path.write_text("Key\tAmount\nA\t1.25\n", encoding="utf-8")
+                results[suffix] = analyze.run_request({
+                    "action": "inventory",
+                    "tables": {"Sales": {"file": str(path)}},
+                })
+        for result in results.values():
+            self.assertTrue(result["valid"])
+            fields = result["tables"]["Sales"]["fields"]
+            self.assertEqual(fields[1]["inferred_type"], "decimal")
+            self.assertEqual(fields[1]["sample_values"], ["1.25"])
+
     def test_decimal_aggregate_is_preserved_as_an_exact_json_number(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "amounts.csv"
@@ -91,6 +150,209 @@ class AnalyzeTests(unittest.TestCase):
         decoded = json.loads(serialized, parse_float=Decimal)
         self.assertEqual(decoded["totals"]["Precise Total"], expected)
 
+    def test_sum_is_exact_beyond_the_default_decimal_context(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "amounts.csv"
+            path.write_text(
+                "Amount\n1234567890123456789012345678901234567890\n"
+                "0.00000000000000000000000000001\n",
+                encoding="utf-8",
+            )
+            result = analyze.run_request({
+                "action": "aggregate",
+                "tables": {"Sales": {"file": str(path)}},
+                "fact_table": "Sales",
+                "measures": [{"name": "Total", "op": "sum", "table": "Sales", "column": "Amount"}],
+            })
+        self.assertEqual(
+            result["totals"]["Total"],
+            Decimal("1234567890123456789012345678901234567890.00000000000000000000000000001"),
+        )
+
+    def test_expression_multiplication_and_decimal_literal_remain_exact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "amounts.csv"
+            path.write_text("Amount\n2\n", encoding="utf-8")
+            result = analyze.run_request({
+                "action": "aggregate",
+                "tables": {"Sales": {"file": str(path)}},
+                "fact_table": "Sales",
+                "measures": [
+                    {"name": "Large product", "op": "sum_expression", "expression": "Amount * 12345678901234567890123456789"},
+                    {"name": "Long literal", "op": "sum_expression", "expression": "Amount * 0.12345678901234567890123456789"},
+                ],
+            })
+        self.assertEqual(result["totals"]["Large product"], Decimal("24691357802469135780246913578"))
+        self.assertEqual(result["totals"]["Long literal"], Decimal("0.24691357802469135780246913578"))
+
+    def test_cli_preserves_decimal_json_filter_tokens(self):
+        token = "0.12345678901234567890123456789"
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            data = folder / "amounts.csv"
+            data.write_text(f"Amount\n{token}\n", encoding="utf-8")
+            config = folder / "request.json"
+            config.write_text(
+                '{"action":"aggregate","tables":{"Sales":{"file":'
+                + json.dumps(str(data))
+                + '}},"fact_table":"Sales","filters":[{"table":"Sales",'
+                '"column":"Amount","op":"eq","value":'
+                + token
+                + '}],"measures":[{"name":"Total","op":"sum",'
+                '"table":"Sales","column":"Amount"}]}',
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout, parse_float=Decimal)
+        self.assertEqual(result["rows_used"], 1)
+        self.assertEqual(result["totals"]["Total"], Decimal(token))
+
+    def test_report_builder_preserves_decimal_json_filter_tokens(self):
+        token = "0.12345678901234567890123456789"
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            data = folder / "amounts.csv"
+            data.write_text(f"Amount\n{token}\n", encoding="utf-8")
+            config = folder / "report.json"
+            config.write_text(
+                '{"analyses":[{"name":"Exact","request":{"action":"aggregate",'
+                '"tables":{"Sales":{"file":' + json.dumps(str(data)) + '}}'
+                ',"fact_table":"Sales","filters":[{"table":"Sales",'
+                '"column":"Amount","op":"eq","value":' + token + '}],'
+                '"measures":[{"name":"Total","op":"sum","table":"Sales",'
+                '"column":"Amount"}]}}]}',
+                encoding="utf-8",
+            )
+            output = folder / "report.md"
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "bi_report.py"), "--config", str(config), "--output", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            report = output.read_text(encoding="utf-8") if output.exists() else ""
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(token, report)
+
+    def test_nonstandard_json_constant_is_rejected(self):
+        with self.assertRaises(analyze.RequestError):
+            analyze.load_json(io.StringIO('{"value": NaN}'))
+
+    def test_extreme_json_exponent_becomes_a_clear_cli_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "request.json"
+            config.write_text(
+                '{"action":"inventory","tables":{"Sales":{"file":"unused.csv"}},'
+                '"unused":1e999999999999999999999999999999999999999999999}',
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("outside the supported Decimal range", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+
+    def test_long_json_integer_is_preserved_without_python_conversion_limit(self):
+        digits = "9" * 5_000
+        parsed = analyze.load_json(io.StringIO('{"value":' + digits + '}'))
+        self.assertEqual(parsed["value"], Decimal(digits))
+
+    def test_exact_arithmetic_precision_limit_is_enforced(self):
+        with self.assertRaisesRegex(analyze.RequestError, "100,000 digits"):
+            analyze._decimal_add(Decimal("1e100001"), Decimal(1))
+
+    def test_decimal_arithmetic_isolated_from_ambient_precision_and_traps(self):
+        large = Decimal("12345678901234567890123456789")
+        tiny = Decimal("1e-1000000000000000000")
+        with localcontext() as ambient:
+            ambient.prec = 2
+            ambient.traps[Inexact] = True
+            ambient.traps[Rounded] = True
+            ambient.traps[Subnormal] = True
+            self.assertEqual(analyze._decimal_add(large, Decimal(1)), Decimal("12345678901234567890123456790"))
+            self.assertEqual(analyze._decimal_subtract(large, Decimal(1)), Decimal("12345678901234567890123456788"))
+            self.assertEqual(analyze._decimal_multiply(large, Decimal(2)), Decimal("24691357802469135780246913578"))
+            self.assertEqual(analyze._decimal_sum([large, Decimal(1), Decimal(1)]), Decimal("12345678901234567890123456791"))
+            self.assertEqual(analyze._decimal_add(tiny, tiny), Decimal("2e-1000000000000000000"))
+            self.assertEqual(
+                analyze._decimal_divide(Decimal(1), Decimal(3)),
+                Decimal("0.33333333333333333333333333333333333333333333333333"),
+            )
+
+    def test_report_builder_mixes_success_and_request_error_with_limitations(self):
+        request = {
+            "action": "aggregate",
+            "tables": TABLES,
+            "relationships": RELATIONSHIPS,
+            "fact_table": "Orders",
+            "measures": [{"name": "Net Sales", "op": "sum_expression", "expression": "Quantity * UnitPrice * (1 - DiscountPct)"}],
+        }
+        report = bi_report.build_report({
+            "title": "Contract test",
+            "analyses": [
+                {"name": "Valid analysis", "request": request},
+                {"name": "Invalid analysis", "request": {**request, "action": "unsupported"}},
+            ],
+        })
+        self.assertIn("## Valid analysis", report)
+        self.assertIn("| Net Sales | 1705 |", report)
+        self.assertIn("## Invalid analysis", report)
+        self.assertIn("**Did not run:**", report)
+        self.assertIn("## Limitations", report)
+
+    def test_report_builder_refuses_to_overwrite_its_request(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            config = folder / "report.json"
+            config.write_text(json.dumps({"analyses": []}), encoding="utf-8")
+            original = config.read_bytes()
+            with redirect_stderr(io.StringIO()):
+                status = bi_report.main(["--config", str(config), "--output", str(config)])
+            self.assertEqual(status, 2)
+            self.assertEqual(config.read_bytes(), original)
+
+    def test_division_uses_documented_50_digit_precision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "amounts.csv"
+            path.write_text("Amount\n1\n2\n", encoding="utf-8")
+            result = analyze.run_request({
+                "action": "aggregate",
+                "tables": {"Sales": {"file": str(path)}},
+                "fact_table": "Sales",
+                "measures": [{"name": "Mean", "op": "mean", "table": "Sales", "column": "Amount"}],
+            })
+        self.assertEqual(
+            result["totals"]["Mean"],
+            Decimal("1.5"),
+        )
+        self.assertEqual(len(analyze._decimal_divide(Decimal(1), Decimal(3)).as_tuple().digits), 50)
+
+    def test_large_integral_decimal_serializes_without_python_int_limit(self):
+        digits = "9" * 5_000
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "large.csv"
+            path.write_text(f"Amount\n{digits}\n", encoding="utf-8")
+            result = analyze.run_request({
+                "action": "aggregate",
+                "tables": {"Sales": {"file": str(path)}},
+                "fact_table": "Sales",
+                "measures": [{"name": "Total", "op": "sum", "table": "Sales", "column": "Amount"}],
+            })
+        serialized = analyze._json_dumps(result)
+        self.assertIn(f'"Total": {digits}', serialized)
+        decoded = json.loads(serialized, parse_int=Decimal, parse_float=Decimal)
+        self.assertEqual(decoded["totals"]["Total"], Decimal(digits))
+
     def test_dimension_filter_is_applied_to_fact_rows(self):
         request = {
             "action": "aggregate",
@@ -108,6 +370,71 @@ class AnalyzeTests(unittest.TestCase):
     def test_expression_cannot_call_functions(self):
         with self.assertRaises(analyze.RequestError):
             analyze._compile_expression("__import__('os').system('echo unsafe')", {"Quantity"})
+
+    def test_boolean_values_are_not_coerced_to_numeric_filters_or_measures(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            numeric_path = folder / "numeric.csv"
+            numeric_path.write_text("Amount\n1\n0\n", encoding="utf-8")
+            with self.assertRaisesRegex(analyze.RequestError, "Boolean value is not numeric"):
+                analyze.run_request({
+                    "action": "aggregate",
+                    "tables": {"Sales": {"file": str(numeric_path)}},
+                    "fact_table": "Sales",
+                    "filters": [{"table": "Sales", "column": "Amount", "op": "eq", "value": True}],
+                    "measures": [{"name": "Sum", "op": "sum", "table": "Sales", "column": "Amount"}],
+                })
+
+            import openpyxl
+            boolean_path = folder / "booleans.xlsx"
+            workbook = openpyxl.Workbook()
+            worksheet = workbook.active
+            worksheet.append(["Flag"])
+            worksheet.append([True])
+            worksheet.append([False])
+            workbook.save(boolean_path)
+            with self.assertRaisesRegex(analyze.RequestError, "Boolean value is not numeric"):
+                analyze.run_request({
+                    "action": "aggregate",
+                    "tables": {"Flags": {"file": str(boolean_path)}},
+                    "fact_table": "Flags",
+                    "measures": [{"name": "Sum", "op": "sum", "table": "Flags", "column": "Flag"}],
+                })
+
+    def test_corrupt_xlsx_becomes_clean_cli_and_report_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            bad = folder / "bad.xlsx"
+            bad.write_text("not an xlsx archive", encoding="utf-8")
+            request = {"action": "inventory", "tables": {"Sales": {"file": str(bad)}}}
+            config = folder / "request.json"
+            config.write_text(json.dumps(request), encoding="utf-8")
+            direct = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(direct.returncode, 2)
+            self.assertIn("Could not read Excel workbook", direct.stderr)
+            self.assertNotIn("Traceback", direct.stderr)
+
+            report_config = folder / "report.json"
+            report_config.write_text(
+                json.dumps({"analyses": [{"name": "Bad workbook", "request": request}]}),
+                encoding="utf-8",
+            )
+            output = folder / "report.md"
+            report_run = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "bi_report.py"), "--config", str(report_config), "--output", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(report_run.returncode, 0, report_run.stderr)
+            report = output.read_text(encoding="utf-8")
+            self.assertIn("Could not read Excel workbook", report)
+            self.assertIn("## Limitations", report)
 
     def test_xlsx_named_sheet_is_read(self):
         import openpyxl
@@ -155,6 +482,26 @@ class AnalyzeTests(unittest.TestCase):
             config = {"tables": {"Sales": {"file": str(source)}}}
             with self.assertRaises(analyze.RequestError):
                 analyze.ensure_output_safe(source, Path(temp) / "request.json", config)
+
+    def test_cli_output_write_error_is_clean_and_nonzero(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            config = folder / "request.json"
+            config.write_text(json.dumps({
+                "action": "inventory",
+                "tables": {"Customers": {"file": str(DEMO / "customers.csv")}},
+            }), encoding="utf-8")
+            target = folder / "existing-directory"
+            target.mkdir()
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config), "--output", str(target)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Error writing output", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
 
     def test_markdown_is_explicitly_labeled(self):
         result = analyze.run_request({"action": "inventory", "tables": TABLES})

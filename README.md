@@ -1,6 +1,6 @@
 # Power BI Simulator Skills
 
-**A provider-neutral LLM skill for Power BI-style analytics, paired with a small deterministic Python helper.** This is a local, unpublished draft intended as a sibling to [Kaamchor-Solutions/SPSS-Simulator-Skills](https://github.com/Kaamchor-Solutions/SPSS-Simulator-Skills). Its proposed destination is [Kaamchor-Solutions/PowerBI-Simulator-Skills](https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills); neither the exact public package nor its license has been approved for release.
+**A provider-neutral LLM skill for Power BI-style analytics, paired with a small deterministic Python helper.** This public release is the Power BI companion to [Kaamchor-Solutions/SPSS-Simulator-Skills](https://github.com/Kaamchor-Solutions/SPSS-Simulator-Skills), published at [Kaamchor-Solutions/PowerBI-Simulator-Skills](https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills) under the MIT License.
 
 > **What this is:** an LLM-guided simulation for inspecting accessible tables, proposing a semantic model, drafting DAX/Power Query M, planning report pages, and computing a narrow set of transparent table operations. **What this is not:** Microsoft Power BI Desktop/Service, a DAX or Power Query engine, a `.pbix`/`.pbip` parser, or a clone/replacement for Microsoft's proprietary software. It cannot connect to a tenant, refresh/publish a model, render native visuals, or establish Power BI parity.
 
@@ -53,6 +53,7 @@ SKILL.md                          Agent Skill instructions
 SYSTEM_PROMPT.md                  Chat-first system-prompt fallback
 scripts/analyze.py                Bounded JSON-in/JSON-out helper
 scripts/bi_report.py              Multi-analysis Markdown report builder
+scripts/build_archive.py          Deterministic local source ZIP builder
 scripts/requirements.txt           Optional Excel reader
 protocols/                        On-demand task procedures
 references/                       Model and runtime guidance
@@ -68,10 +69,11 @@ tests/                            Fixture tests and portable LLM conformance sui
 ```bash
 python -m pip install -r scripts/requirements.txt
 python -m unittest discover -s tests -v
+python scripts/build_archive.py --verify-reproducible
 ```
 
-Tests cover the helper's stated behavior, small fabricated fixtures, and local response-pattern checks; they do not prove DAX execution or Microsoft product equivalence. The conformance suite does not contact a model host. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting changes.
+The archive command writes the source ZIP beside the package, with sorted paths, fixed timestamps and permissions, and Git/cache exclusions. It verifies two builds byte-for-byte on the current Python/zlib runtime; compressed bytes may differ across runtimes. Tests cover the helper's stated behavior, small fabricated fixtures, and local response-pattern checks; they do not prove DAX execution or Microsoft product equivalence. The conformance suite does not contact a model host. See the [360-degree smoke-test report](docs/smoke-test-report.md) for the current local validation scope and gaps. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting changes.
 
 ## Privacy, affiliation, and license
 
-This independent project is not affiliated with or endorsed by Microsoft. “Power BI” and related marks belong to their respective owners. LLM file access, execution, context size, retention, and connectors depend on the selected host. Do not upload confidential data without authorization; helper samples and derived summaries may still be sensitive. The license is pending approval and the local draft grants no publication or distribution rights. See [`docs/release-review.md`](docs/release-review.md) for status and repository identity; no GitHub changes or publication are part of this package.
+This independent project is not affiliated with or endorsed by Microsoft. “Power BI” and related marks belong to their respective owners. LLM file access, execution, context size, retention, and connectors depend on the selected host. Do not upload confidential data without authorization; helper samples and derived summaries may still be sensitive. This project is distributed under the MIT License; see [`LICENSE`](LICENSE) and [`docs/release-review.md`](docs/release-review.md) for license and release details.

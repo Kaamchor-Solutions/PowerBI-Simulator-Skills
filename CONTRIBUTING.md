@@ -9,6 +9,7 @@ python -m venv .venv
 # macOS/Linux: source .venv/bin/activate
 # Windows PowerShell: .venv\\Scripts\\Activate.ps1
 python -m pip install -r scripts/requirements.txt
+python -m pip install -r tests/requirements.txt
 python -m unittest discover -s tests -v
 ```
 

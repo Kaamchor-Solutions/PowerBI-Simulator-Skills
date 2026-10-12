@@ -1,6 +1,12 @@
 ---
 name: powerbi-simulator
-description: Guide Power BI-style analytics tasks with an LLM: inspect accessible tabular data, shape a semantic model, draft DAX and Power Query M, plan report pages and visuals, compute a constrained subset with the bundled helper, and interpret results. Use for Power BI learning, modeling, DAX/Power Query drafting, report planning, or uploaded CSV/TSV/XLSX analysis. This is a simulation, not Microsoft's Power BI engine or desktop/service app.
+description: >-
+  Guide Power BI-style analytics tasks with an LLM: inspect accessible tabular
+  data, shape a semantic model, draft DAX and Power Query M, plan report pages
+  and visuals, compute a constrained subset with the bundled helper, and
+  interpret results. Use for Power BI learning, modeling, DAX/Power Query
+  drafting, report planning, or uploaded CSV/TSV/XLSX analysis. This is a
+  simulation, not Microsoft's Power BI engine or desktop/service app.
 ---
 
 # Power BI-Style Analytics Skill

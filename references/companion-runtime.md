@@ -7,6 +7,7 @@ python scripts/analyze.py --config examples/demo_sales/inventory-request.json
 python scripts/analyze.py --config examples/demo_sales/model-audit-request.json
 python scripts/analyze.py --config examples/demo_sales/net-sales-by-category-request.json --format markdown
 python scripts/bi_report.py --config examples/demo_sales/report-request.json --output report.md
+python scripts/bi_report.py --config examples/demo_sales/report-request.json --output report-strict.md --fail-on-invalid
 ```
 
 ## Request actions
@@ -33,6 +34,8 @@ Other supported `op` values are `sum`, `mean`, `min`, and `max`. The expression 
 Simple explicit filters use `op` `eq`, `neq`, or `in`, for example `{ "table":"Customers", "column":"Region", "op":"eq", "value":"West" }`. A numeric filter is parsed using the detected numeric type; text values should match source values.
 
 ## Output and status
+
+`bi_report.py` is tolerant by default: it keeps successful analyses and labels the report `COMPLETE`, `PARTIAL`, `FAILED`, or `EMPTY` with succeeded/invalid/error/skipped counts. Therefore, a default-mode exit code of `0` means the report was written, not that every analysis succeeded. With `--fail-on-invalid`, the report is still written for inspection, but the command exits `2` unless the report is non-empty and every analysis succeeds. Report-configuration, unsafe-output, and report-write errors exit `2` in either mode; individual analysis errors are counted and force `2` only in strict mode. In-process callers can use `build_report_result()` for `(markdown, summary)`; `build_report()` remains a Markdown-string compatibility wrapper.
 
 `--format json` is the stable machine-oriented result; `--format markdown` formats the same result for review. The top-level `valid` and `status` must be checked before interpretation. A failed request—including an unreadable or malformed workbook—exits nonzero and emits a concise error; a model-integrity failure returns an explicit invalid result and no aggregate. `rows_input`, `rows_used`, `rows_filtered_out`, `measure_audit`, group rows, and totals are the provenance needed to describe the calculation.
 

@@ -310,6 +310,93 @@ class AnalyzeTests(unittest.TestCase):
         self.assertIn("**Did not run:**", report)
         self.assertIn("## Limitations", report)
 
+    def test_report_cli_strict_mode_returns_nonzero_and_writes_mixed_report(self):
+        request = {
+            "analyses": [
+                {"name": "Valid analysis", "request": {"action": "inventory", "tables": TABLES}},
+                {"name": "Invalid analysis", "request": {"action": "unsupported"}},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            config = folder / "report.json"
+            config.write_text(json.dumps(request), encoding="utf-8")
+            output = folder / "report.md"
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "bi_report.py"), "--config", str(config),
+                 "--output", str(output), "--fail-on-invalid"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            report = output.read_text(encoding="utf-8") if output.exists() else ""
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("REPORT STATUS: PARTIAL", report)
+        self.assertIn("## Valid analysis", report)
+        self.assertIn("## Invalid analysis", report)
+        self.assertNotIn("Traceback", completed.stderr)
+
+    def test_report_builder_reports_invalid_error_skipped_and_empty_statuses(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            one_side = folder / "one.csv"
+            one_side.write_text("Key\nA\nA\n", encoding="utf-8")
+            many_side = folder / "many.csv"
+            many_side.write_text("ForeignKey\nmissing\n", encoding="utf-8")
+            invalid_model = {
+                "action": "model_audit",
+                "tables": {"One": {"file": str(one_side)}, "Many": {"file": str(many_side)}},
+                "relationships": [{"one_table": "One", "one_column": "Key", "many_table": "Many", "many_column": "ForeignKey"}],
+            }
+            report, summary = bi_report.build_report_result({
+                "analyses": [
+                    {"name": "Valid", "request": {"action": "inventory", "tables": TABLES}},
+                    {"name": "Invalid audit", "request": invalid_model},
+                    {"name": "Execution error", "request": {"action": "unsupported"}},
+                    {"name": "Malformed"},
+                ]
+            })
+            empty_report, empty_summary = bi_report.build_report_result({"analyses": []})
+            failed_report, failed_summary = bi_report.build_report_result({
+                "analyses": [
+                    {"name": "Invalid audit", "request": invalid_model},
+                    {"name": "Execution error", "request": {"action": "unsupported"}},
+                ]
+            })
+
+        self.assertEqual(summary, {
+            "status": "partial", "total": 4, "succeeded": 1, "invalid": 1, "errors": 1, "skipped": 1,
+        })
+        self.assertIn("REPORT STATUS: PARTIAL", report)
+        self.assertEqual(empty_summary, {
+            "status": "empty", "total": 0, "succeeded": 0, "invalid": 0, "errors": 0, "skipped": 0,
+        })
+        self.assertIn("REPORT STATUS: EMPTY", empty_report)
+        self.assertEqual(failed_summary, {
+            "status": "failed", "total": 2, "succeeded": 0, "invalid": 1, "errors": 1, "skipped": 0,
+        })
+        self.assertIn("REPORT STATUS: FAILED", failed_report)
+
+    def test_report_cli_strict_mode_accepts_complete_and_rejects_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            for label, analyses, expected_code, expected_status in (
+                ("complete", [{"name": "Inventory", "request": {"action": "inventory", "tables": TABLES}}], 0, "COMPLETE"),
+                ("empty", [], 2, "EMPTY"),
+            ):
+                config = folder / f"{label}.json"
+                config.write_text(json.dumps({"analyses": analyses}), encoding="utf-8")
+                output = folder / f"{label}.md"
+                completed = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / "bi_report.py"), "--config", str(config),
+                     "--output", str(output), "--fail-on-invalid"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, expected_code, completed.stderr)
+                self.assertIn(f"REPORT STATUS: {expected_status}", output.read_text(encoding="utf-8"))
+
     def test_report_builder_refuses_to_overwrite_its_request(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)

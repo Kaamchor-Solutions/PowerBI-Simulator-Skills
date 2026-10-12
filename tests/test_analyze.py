@@ -476,6 +476,28 @@ class AnalyzeTests(unittest.TestCase):
         with self.assertRaises(analyze.RequestError):
             analyze.run_request(request)
 
+    def test_unknown_top_level_filter_typo_is_rejected_before_file_io(self):
+        request = {
+            "action": "aggregate",
+            "tables": {"Sales": {"file": "/path/that/must/not/be/opened.csv"}},
+            "fact_table": "Sales",
+            "filter": [{"table": "Sales", "column": "Region", "op": "eq", "value": "West"}],
+            "measures": [{"name": "Rows", "op": "count_rows"}],
+        }
+        with self.assertRaisesRegex(
+            analyze.RequestError,
+            r"Unknown aggregate request key 'filter'; did you mean 'filters'\?",
+        ):
+            analyze.run_request(request)
+
+    def test_non_string_action_is_rejected_before_file_io(self):
+        request = {
+            "action": [],
+            "tables": {"Sales": {"file": "/path/that/must/not/be/opened.csv"}},
+        }
+        with self.assertRaisesRegex(analyze.RequestError, "'action' must be a string"):
+            analyze.run_request(request)
+
     def test_output_cannot_overwrite_input(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "source.csv"

@@ -6,6 +6,7 @@ import argparse
 import ast
 import csv
 import datetime as dt
+import difflib
 import json
 import math
 import sys
@@ -31,6 +32,34 @@ from typing import Any
 
 class RequestError(ValueError):
     """A request or source file is invalid or outside the helper's scope."""
+
+
+_REQUEST_KEYS = {
+    "inventory": frozenset({"action", "tables"}),
+    "model_audit": frozenset({"action", "tables", "relationships"}),
+    "aggregate": frozenset({
+        "action", "tables", "relationships", "fact_table", "group_by", "filters", "measures",
+    }),
+}
+
+
+def _validate_request_keys(config: dict[str, Any]) -> str:
+    action = config.get("action")
+    if not isinstance(action, str):
+        raise RequestError("'action' must be a string: inventory, model_audit, aggregate")
+    if action not in _REQUEST_KEYS:
+        raise RequestError("'action' must be one of: inventory, model_audit, aggregate")
+
+    allowed = _REQUEST_KEYS[action]
+    unknown = sorted((key for key in config if key not in allowed), key=str)
+    if unknown:
+        key = unknown[0]
+        message = f"Unknown {action} request key {key!r}"
+        suggestion = difflib.get_close_matches(str(key), sorted(allowed), n=1, cutoff=0.6)
+        if suggestion:
+            message += f"; did you mean {suggestion[0]!r}?"
+        raise RequestError(message)
+    return action
 
 
 # Addition and multiplication of finite Decimal inputs are exact unless the
@@ -773,7 +802,7 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
 def run_request(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise RequestError("Request root must be a JSON object")
-    action = config.get("action")
+    action = _validate_request_keys(config)
     tables = load_tables(config)
     if action == "inventory":
         return inventory(config, tables)

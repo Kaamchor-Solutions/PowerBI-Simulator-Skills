@@ -11,6 +11,8 @@ python scripts/bi_report.py --config examples/demo_sales/report-request.json --o
 
 ## Request actions
 
+Top-level keys are action-specific: `inventory` accepts `action` and `tables`; `model_audit` also accepts `relationships`; `aggregate` also accepts `relationships`, `fact_table`, `group_by`, `filters`, and `measures`. Unknown top-level keys are now rejected before source files are opened, with a spelling suggestion when available. This intentionally changes the previous behavior that silently ignored extra keys; for example, `filter` is rejected with a suggestion to use `filters`.
+
 An `inventory` request has `action` and a non-empty `tables` map. Each table has a `file` path and, for `.xlsx`, an optional `sheet` name or zero-based index. The helper returns rows/columns, duplicate rows, inferred field types, missing/distinct counts, and up to five sample values per field.
 
 A `model_audit` request adds `relationships`, each declared as `{ "one_table": "Customers", "one_column": "CustomerID", "many_table": "Orders", "many_column": "CustomerID" }`. The audit checks null and duplicate keys on the declared one side and orphan nonblank foreign keys on the many side. It does not validate every Power BI relationship property or implement filter propagation. A failed integrity check returns `valid: false`.

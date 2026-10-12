@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic source ZIP for this local package draft."""
+"""Build a deterministic ZIP from explicitly approved release files."""
 from __future__ import annotations
 
 import argparse
@@ -9,11 +9,12 @@ import os
 import stat
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile, ZipInfo
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = PACKAGE_ROOT.parent / f"{PACKAGE_ROOT.name}.zip"
+RELEASE_MANIFEST = "release-manifest.txt"
 EXCLUDED_DIRECTORIES = {".git", ".pytest_cache", "__pycache__", ".venv", "venv"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 FIXED_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
@@ -31,17 +32,51 @@ def _source_files(source_root: Path) -> tuple[Path, list[tuple[Path, Path]]]:
     root = Path(source_root).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"Source root is not a directory: {root}")
+    manifest_path = root / RELEASE_MANIFEST
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError(f"Required release manifest is missing or not a regular file: {manifest_path}")
+
     files: list[tuple[Path, Path]] = []
-    for path in root.rglob("*"):
-        relative = path.relative_to(root)
+    seen: set[str] = set()
+    for line_number, raw_line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
+        entry = raw_line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        if entry != raw_line or "\\" in entry or "\x00" in entry:
+            raise ValueError(f"Invalid release-manifest entry on line {line_number}: {raw_line!r}")
+        relative = PurePosixPath(entry)
+        if (
+            relative.is_absolute()
+            or relative.as_posix() != entry
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise ValueError(f"Unsafe release-manifest path on line {line_number}: {entry!r}")
+        if entry == RELEASE_MANIFEST:
+            raise ValueError(f"{RELEASE_MANIFEST} is included automatically and must not list itself")
+        if entry in seen:
+            raise ValueError(f"Duplicate release-manifest path on line {line_number}: {entry!r}")
+        seen.add(entry)
         if any(part in EXCLUDED_DIRECTORIES for part in relative.parts):
-            continue
-        if path.suffix.lower() in EXCLUDED_SUFFIXES:
-            continue
-        if path.is_symlink():
-            raise ValueError(f"Refusing to archive a symlink: {path}")
-        if path.is_file():
-            files.append((path, relative))
+            raise ValueError(f"Release manifest includes a generated directory: {entry!r}")
+        if PurePosixPath(entry).suffix.lower() in EXCLUDED_SUFFIXES:
+            raise ValueError(f"Release manifest includes a compiled file: {entry!r}")
+
+        path = root
+        for part in relative.parts:
+            path = path / part
+            if path.is_symlink():
+                raise ValueError(f"Refusing to archive a symlink: {path}")
+        try:
+            resolved = path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError(f"Release-manifest file does not exist: {entry!r}") from exc
+        if not _is_within(resolved, root):
+            raise ValueError(f"Release-manifest path resolves outside the source root: {entry!r}")
+        if not path.is_file():
+            raise ValueError(f"Release-manifest path is not a regular file: {entry!r}")
+        files.append((path, relative))
+
+    files.append((manifest_path, PurePosixPath(RELEASE_MANIFEST)))
     files.sort(key=lambda item: item[1].as_posix())
     return root, files
 

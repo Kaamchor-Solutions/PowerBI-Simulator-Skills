@@ -8,3 +8,5 @@
 - Package scope and limitations are documented in the README and [`docs/methods-and-limitations.md`](methods-and-limitations.md). This independent project is not affiliated with or endorsed by Microsoft.
 
 The repository contains the published source and tests. The local deterministic ZIP is a separate source archive; its checksum and integrity are verified during release validation. No claim is made that this package executes general DAX or Power Query M, integrates with a Power BI tenant, or matches Microsoft's products.
+
+The archive builder reads the root [`release-manifest.txt`](../release-manifest.txt) as an explicit file allowlist and includes that manifest in the ZIP. Git is not required to build an archive from a source checkout, and a missing or invalid manifest is an error—there is no recursive or Git-based fallback. Unlisted files, including ignored local data, credentials, generated reports, and unrelated files, are not packaged. Review this list whenever release contents change; only add files approved for public distribution.

@@ -1,79 +1,44 @@
-# Power BI Simulator Skills
+# Power BI-Style Analysis Helper
 
-**A provider-neutral LLM skill for Power BI-style analytics, paired with a small deterministic Python helper.** This public release is the Power BI companion to [Kaamchor-Solutions/SPSS-Simulator-Skills](https://github.com/Kaamchor-Solutions/SPSS-Simulator-Skills), published at [Kaamchor-Solutions/PowerBI-Simulator-Skills](https://github.com/Kaamchor-Solutions/PowerBI-Simulator-Skills) under the MIT License.
+Use this project with ChatGPT, Claude, or another chat AI to explore spreadsheet data and plan a report inspired by Microsoft Power BI. You do **not** need to know how to code to try the included example.
 
-> **What this is:** an LLM-guided simulation for inspecting accessible tables, proposing a semantic model, drafting DAX/Power Query M, planning report pages, and computing a narrow set of transparent table operations. **What this is not:** Microsoft Power BI Desktop/Service, a DAX or Power Query engine, a `.pbix`/`.pbip` parser, or a clone/replacement for Microsoft's proprietary software. It cannot connect to a tenant, refresh/publish a model, render native visuals, or establish Power BI parity.
+> **Important:** This is not Microsoft Power BI. It does not open or create real Power BI reports, connect to your Power BI account, or publish dashboards. It provides instructions an AI can follow and an optional, limited helper for some simple data checks.
 
-## What is included
+## Try the included example
 
-- `SKILL.md`: detailed Agent Skill with task routing, workflow, guardrails, and protocol links.
-- `SYSTEM_PROMPT.md`: copy-paste fallback for chat LLMs that do not load skill folders.
-- `scripts/analyze.py`: deterministic inventory, explicit relationship key audit, and constrained aggregates from CSV/TSV/TAB/`.xlsx`.
-- `scripts/bi_report.py`: combines multiple supported requests into a reproducible Markdown note.
-- `protocols/` and `references/`: on-demand guidance for data audit, semantic models, aggregate boundaries, DAX/M drafting, report design, validation, and runtime schema.
-- `examples/demo_sales/`: fabricated tables, runnable JSON requests, and hand-checkable totals.
-- `tests/` and `.github/workflows/tests.yml`: helper/fixture tests, a portable LLM conformance suite, and Python CI.
+The example uses made-up sales information. It is safe to use for learning and does not describe real people or sales.
 
-## Quick start from a local checkout
+1. Open [`SYSTEM_PROMPT.md`](SYSTEM_PROMPT.md) and copy its text. In your AI chat app, paste it into the first message, or into the app's project/custom instructions if it has that feature. If your app cannot keep project instructions, paste the text at the beginning of the chat.
+2. Open the [example sales files](examples/demo_sales/). Download these three files and attach them to your chat: `customers.csv`, `products.csv`, and `orders.csv`. On GitHub, open each file and choose **Download raw**.
+3. Paste this request into the chat:
 
-Install the optional Excel reader and run the examples from the repository root:
+   > Please look at the three example files I attached. In everyday language, explain what each file contains, how the information might fit together, and suggest a simple one-page sales dashboard. Tell me what you were actually able to inspect. Clearly label suggestions and estimates, and do not make up results.
 
-```bash
-python -m venv .venv
-# macOS/Linux: source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install -r scripts/requirements.txt
-python scripts/analyze.py --config examples/demo_sales/inventory-request.json --format markdown
-python scripts/analyze.py --config examples/demo_sales/model-audit-request.json
-python scripts/analyze.py --config examples/demo_sales/net-sales-by-category-request.json
-python scripts/bi_report.py --config examples/demo_sales/report-request.json --output demo-report.md
-python -m unittest discover -s tests -v
-```
+4. Ask follow-up questions in ordinary language—for example, “What does each row represent?” or “What should I check before trusting these totals?”
 
-For CSV/TSV-only requests, Python's standard library is enough; `openpyxl` is needed for `.xlsx`. Example totals: Net Sales `1705`, Order Count `10`, and West-region Net Sales `720` (no currency is assigned). The helper uses its own bounded operations; it does **not** run the accompanying DAX examples.
+The AI app must be able to read the attached files for this to work. Its file and analysis features vary. If it cannot open the files, ask it to explain what it needs, or paste a small, non-sensitive sample instead.
 
-## Use with an LLM
+## Use your own data
 
-For ChatGPT, Claude, or another chat-first model, use [`SYSTEM_PROMPT.md`](SYSTEM_PROMPT.md) as the project/custom instruction where supported. Add `SKILL.md` and the relevant protocols/references as project knowledge or attach them to a task. Upload data only through a host workflow you are authorized to use. See [`docs/installation.md`](docs/installation.md) and [`docs/using-with-llms.md`](docs/using-with-llms.md).
+You can try the same approach with a spreadsheet or data file your AI app accepts:
 
-For exact helper results, an execution environment must be able to access both the repository and the input files, and must actually run `scripts/analyze.py`. A prompt alone does not install code, grant file access, or provide computation. Without such a tool, the LLM can still explain concepts, draft formulas, propose a model, mock a report page, or interpret supplied output—but must not invent results.
+- Paste the instructions from [`SYSTEM_PROMPT.md`](SYSTEM_PROMPT.md), then attach only the files needed for your question.
+- Ask the AI to explain the tables, suggest how they may relate, draft formulas, or sketch a report layout.
+- Ask it to say which files it could actually read and to separate checked results from suggestions or assumptions.
 
-## Check LLM behavior across hosts
+**Protect your information.** Only share data you are allowed to share. Check your AI app's privacy and file-handling settings before uploading anything. Remove or disguise names, account numbers, and other sensitive details when possible. A summary can still contain sensitive information, even if it does not show the original rows.
 
-The package includes a provider-neutral response-pattern suite; it makes no model/API calls and is not a benchmark or parity claim. Follow [`tests/llm_conformance/README.md`](tests/llm_conformance/README.md) to load the same instructions in each host, run the prompts in fresh chats, record verbatim responses, and score them locally. From the repository root, use `python tests/llm_conformance/score.py --print-prompts`, then create a response file with `python tests/llm_conformance/score.py --init-responses /tmp/llm-responses.json`, fill it with the host's outputs, and run `python tests/llm_conformance/score.py --responses /tmp/llm-responses.json`. Review the rubric results and full responses manually.
+## What it can—and cannot—do
 
-## Simulation contract
+It can help you understand accessible tables, suggest how tables could fit together, draft formulas used in Power BI, and describe a report layout. If the optional helper is set up and run, it can also perform a limited set of clearly defined checks and calculations on supported files.
 
-Keep **proposed** DAX/M separate from **executed** helper calculations, and keep a textual/wireframe report simulation separate from a real Power BI report. Never claim that a query ran, DAX compiled, a model refreshed, or a report was published unless a compatible authorized tool performed that exact action and confirmed it. The bundled helper supports only a documented subset; see [`docs/methods-and-limitations.md`](docs/methods-and-limitations.md) and [`references/companion-runtime.md`](references/companion-runtime.md).
+It **cannot** act as Power BI itself. It does not open `.pbix` or `.pbip` reports, connect to a Power BI account, create real interactive charts, refresh or publish a report, or run and verify general Power BI formulas. Suggested formulas and dashboard layouts are drafts—not tested Power BI results. The AI's ability to read files or calculate anything depends on the app and features you are using; instructions alone do not give it access.
 
-## Repository map
+## Want more detail?
 
-```text
-SKILL.md                          Agent Skill instructions
-SYSTEM_PROMPT.md                  Chat-first system-prompt fallback
-scripts/analyze.py                Bounded JSON-in/JSON-out helper
-scripts/bi_report.py              Multi-analysis Markdown report builder
-scripts/build_archive.py          Deterministic local source ZIP builder
-scripts/requirements.txt           Optional Excel reader
-protocols/                        On-demand task procedures
-references/                       Model and runtime guidance
-docs/                             Install, setup, limits, sample output
-examples/demo_sales/              Fabricated CSVs and runnable requests
-templates/workspace-state.md      Portable simulation continuity template
-tests/                            Fixture tests and portable LLM conformance suite
-.github/workflows/tests.yml        Python CI
-```
+- [What the helper supports and its limitations](docs/methods-and-limitations.md)
+- [Using the project with different AI apps](docs/using-with-llms.md)
+- [Optional setup and helper instructions](docs/installation.md) — this section is for people comfortable installing software; it is not needed to try the chat example.
+- [Example files and their notes](examples/demo_sales/README.md)
 
-## Development
-
-```bash
-python -m pip install -r scripts/requirements.txt
-python -m unittest discover -s tests -v
-python scripts/build_archive.py --verify-reproducible
-```
-
-The archive command writes the source ZIP beside the package, with sorted paths, fixed timestamps and permissions, and Git/cache exclusions. It verifies two builds byte-for-byte on the current Python/zlib runtime; compressed bytes may differ across runtimes. Tests cover the helper's stated behavior, small fabricated fixtures, and local response-pattern checks; they do not prove DAX execution or Microsoft product equivalence. The conformance suite does not contact a model host. See the [360-degree smoke-test report](docs/smoke-test-report.md) for the current local validation scope and gaps. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting changes.
-
-## Privacy, affiliation, and license
-
-This independent project is not affiliated with or endorsed by Microsoft. “Power BI” and related marks belong to their respective owners. LLM file access, execution, context size, retention, and connectors depend on the selected host. Do not upload confidential data without authorization; helper samples and derived summaries may still be sensitive. This project is distributed under the MIT License; see [`LICENSE`](LICENSE) and [`docs/release-review.md`](docs/release-review.md) for license and release details.
+This is an independent community project. It is not affiliated with or endorsed by Microsoft. “Power BI” is a Microsoft trademark. The project is shared under the [MIT License](LICENSE).

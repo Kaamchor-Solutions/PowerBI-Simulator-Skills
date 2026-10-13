@@ -322,6 +322,43 @@ class AnalyzeTests(unittest.TestCase):
         with self.assertRaises(analyze.RequestError):
             analyze.load_json(io.StringIO('{"value": NaN}'))
 
+    def test_duplicate_json_object_members_are_rejected_at_every_depth(self):
+        fixtures = (
+            ('{"action":"inventory","action":"aggregate"}', "action"),
+            ('{"tables":{"Sales":{"file":"one.csv","file":"two.csv"}}}', "file"),
+        )
+        for text, duplicate in fixtures:
+            with self.subTest(duplicate=duplicate):
+                with self.assertRaisesRegex(analyze.RequestError, f"Duplicate JSON object key {duplicate!r}"):
+                    analyze.load_json(io.StringIO(text))
+
+    def test_duplicate_json_object_member_is_a_clean_cli_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "request.json"
+            config.write_text('{"action":"inventory","action":"aggregate","tables":{}}', encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config)],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Duplicate JSON object key 'action'", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertFalse(json.loads(completed.stdout)["valid"])
+
+    def test_duplicate_json_object_member_is_a_clean_report_cli_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "report.json"
+            output = Path(temp) / "report.md"
+            config.write_text('{"analyses":[],"analyses":[]}', encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "bi_report.py"), "--config", str(config), "--output", str(output)],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Duplicate JSON object key 'analyses'", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertFalse(output.exists())
+
     def test_extreme_json_exponent_becomes_a_clear_cli_error(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp) / "request.json"

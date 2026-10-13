@@ -117,6 +117,15 @@ def _reject_json_constant(token: str):
     raise RequestError(f"Non-standard JSON numeric constant {token!r} is not allowed")
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RequestError(f"Duplicate JSON object key {key!r} is not allowed")
+        result[key] = value
+    return result
+
+
 def _parse_json_decimal(token: str) -> Decimal:
     if len(token) > _MAX_JSON_NUMBER_TOKEN_LENGTH:
         raise RequestError("JSON number token exceeds the 100,000-character limit")
@@ -147,6 +156,7 @@ def load_json(handle) -> Any:
         parse_int=_parse_json_integer,
         parse_float=_parse_json_decimal,
         parse_constant=_reject_json_constant,
+        object_pairs_hook=_reject_duplicate_json_keys,
     )
 
 

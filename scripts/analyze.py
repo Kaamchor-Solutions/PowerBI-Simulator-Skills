@@ -22,6 +22,7 @@ from decimal import (
     MIN_EMIN,
     Overflow,
     Rounded,
+    ROUND_HALF_EVEN,
     Subnormal,
     Underflow,
     localcontext,
@@ -304,11 +305,13 @@ def _with_decimal_context(operation, precision: int) -> Decimal:
     try:
         with localcontext() as context:
             context.prec = max(1, precision)
+            context.rounding = ROUND_HALF_EVEN
+            context.clamp = 0
             context.Emax = MAX_EMAX
             context.Emin = MIN_EMIN
-            # Results must not depend on ambient trap configuration. Exact
-            # operations may signal Rounded/Subnormal without losing digits;
-            # division intentionally rounds to the documented 50 digits.
+            # Pin relevant settings so arithmetic does not depend on the
+            # caller's Decimal context; exact operations may still signal
+            # Rounded/Subnormal without losing digits.
             for signal in (Clamped, Inexact, Rounded, Subnormal, Underflow):
                 context.traps[signal] = False
             for signal in (DivisionByZero, InvalidOperation, Overflow):

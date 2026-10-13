@@ -8,7 +8,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from decimal import Decimal, Inexact, Rounded, Subnormal, localcontext
+from decimal import (
+    Decimal,
+    Inexact,
+    ROUND_05UP,
+    ROUND_CEILING,
+    ROUND_DOWN,
+    ROUND_FLOOR,
+    ROUND_HALF_DOWN,
+    ROUND_HALF_EVEN,
+    ROUND_HALF_UP,
+    ROUND_UP,
+    Rounded,
+    Subnormal,
+    localcontext,
+)
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -289,6 +303,20 @@ class AnalyzeTests(unittest.TestCase):
                 analyze._decimal_divide(Decimal(1), Decimal(3)),
                 Decimal("0.33333333333333333333333333333333333333333333333333"),
             )
+
+    def test_division_is_independent_of_all_ambient_rounding_modes(self):
+        expected = Decimal("0.33333333333333333333333333333333333333333333333333")
+        rounding_modes = (
+            ROUND_05UP, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR,
+            ROUND_HALF_DOWN, ROUND_HALF_EVEN, ROUND_HALF_UP, ROUND_UP,
+        )
+        for rounding in rounding_modes:
+            with self.subTest(rounding=rounding):
+                with localcontext() as ambient:
+                    ambient.prec = 3
+                    ambient.rounding = rounding
+                    actual = analyze._decimal_divide(Decimal(1), Decimal(3))
+                self.assertEqual(actual, expected)
 
     def test_report_builder_mixes_success_and_request_error_with_limitations(self):
         request = {

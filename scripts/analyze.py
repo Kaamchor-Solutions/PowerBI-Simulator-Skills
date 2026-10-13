@@ -43,6 +43,10 @@ _REQUEST_KEYS = {
         "action", "tables", "relationships", "fact_table", "group_by", "filters", "measures",
     }) | _SAMPLE_POLICY_KEYS,
 }
+_FILTER_OPERATIONS = frozenset({"eq", "neq", "in"})
+_MEASURE_OPERATIONS = frozenset({
+    "count_rows", "count_nonblank", "distinct_count", "sum", "mean", "min", "max", "sum_expression",
+})
 
 
 def _validate_request_keys(config: dict[str, Any]) -> str:
@@ -72,6 +76,33 @@ def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
     if isinstance(sample_limit, bool) or not isinstance(sample_limit, int) or not 0 <= sample_limit <= 5:
         raise RequestError("'sample_limit' must be an integer from 0 to 5")
     return include_samples, sample_limit
+
+
+def _validate_aggregate_operations(config: dict[str, Any]) -> None:
+    filters = config.get("filters", [])
+    measures = config.get("measures")
+    if not isinstance(filters, list) or not isinstance(measures, list) or not measures:
+        raise RequestError("aggregate requires 'filters' to be a list and 'measures' to be a non-empty list")
+    for index, item in enumerate(filters):
+        if not isinstance(item, dict):
+            raise RequestError(f"filters[{index}] must be an object")
+        operation = item.get("op", "eq")
+        if not isinstance(operation, str):
+            raise RequestError(f"filters[{index}].op must be a string")
+        if operation not in _FILTER_OPERATIONS:
+            raise RequestError(f"Unsupported filters[{index}].op {operation!r}; use {sorted(_FILTER_OPERATIONS)}")
+        if "value" not in item:
+            raise RequestError(f"filters[{index}].value is required; use null explicitly to match blank values")
+        if operation == "in" and not isinstance(item.get("value"), list):
+            raise RequestError(f"filters[{index}].value must be a list when op is 'in'")
+    for index, measure in enumerate(measures):
+        if not isinstance(measure, dict):
+            raise RequestError(f"measures[{index}] must be an object")
+        operation = measure.get("op")
+        if not isinstance(operation, str):
+            raise RequestError(f"measures[{index}].op must be a string")
+        if operation not in _MEASURE_OPERATIONS:
+            raise RequestError(f"Unsupported measures[{index}].op {operation!r}; use {sorted(_MEASURE_OPERATIONS)}")
 
 
 # Addition and multiplication of finite Decimal inputs are exact unless the
@@ -662,8 +693,10 @@ def _apply_filters(
         field = _field_spec(item, f"Filter {index + 1}")
         _validate_field_relation(field, fact_table, tables, relationships)
         operation = item.get("op", "eq")
-        if operation not in {"eq", "neq", "in"}:
-            raise RequestError("Filter op must be one of: eq, neq, in")
+        if not isinstance(operation, str):
+            raise RequestError(f"filters[{index}].op must be a string")
+        if operation not in _FILTER_OPERATIONS:
+            raise RequestError(f"Unsupported filters[{index}].op {operation!r}; use {sorted(_FILTER_OPERATIONS)}")
         values = item.get("value")
         if operation == "in":
             if not isinstance(values, list):
@@ -697,6 +730,8 @@ def _measure_value(
     operation = measure.get("op")
     if not isinstance(name, str) or not name.strip():
         raise RequestError("Every measure requires a non-empty 'name'")
+    if not isinstance(operation, str):
+        raise RequestError(f"Measure {name!r} op must be a string")
     if operation == "count_rows":
         return len(rows), {"rows_considered": len(rows), "values_used": len(rows), "blank_or_skipped": 0}
     if operation == "sum_expression":
@@ -739,6 +774,7 @@ def _measure_value(
 
 
 def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    _validate_aggregate_operations(config)
     fact_table = config.get("fact_table")
     if not isinstance(fact_table, str) or fact_table not in tables:
         raise RequestError("aggregate requires a 'fact_table' name from the tables object")
@@ -755,7 +791,6 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
         field = _field_spec(item, f"group_by[{index}]")
         _validate_field_relation(field, fact_table, tables, relationships)
     measure_names = []
-    supported_ops = {"count_rows", "count_nonblank", "distinct_count", "sum", "mean", "min", "max", "sum_expression"}
     for index, measure in enumerate(measures):
         if not isinstance(measure, dict):
             raise RequestError(f"measures[{index}] must be an object")
@@ -766,8 +801,8 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
         if name in measure_names:
             raise RequestError(f"Measure names must be unique; repeated name: {name!r}")
         measure_names.append(name)
-        if operation not in supported_ops:
-            raise RequestError(f"Unsupported measure op {operation!r}; use {sorted(supported_ops)}")
+        if operation not in _MEASURE_OPERATIONS:
+            raise RequestError(f"Unsupported measures[{index}].op {operation!r}; use {sorted(_MEASURE_OPERATIONS)}")
         if operation == "sum_expression":
             _compile_expression(measure.get("expression"), set(_table_columns(tables, fact_table)))
         elif operation != "count_rows":
@@ -829,6 +864,8 @@ def run_request(config: dict[str, Any]) -> dict[str, Any]:
         raise RequestError("Request root must be a JSON object")
     action = _validate_request_keys(config)
     _sample_policy(config)
+    if action == "aggregate":
+        _validate_aggregate_operations(config)
     tables = load_tables(config)
     if action == "inventory":
         return inventory(config, tables)

@@ -22,6 +22,8 @@ A `model_audit` request adds `relationships`, each declared as `{ "one_table": "
 
 An `aggregate` request also supplies `fact_table`, optional `group_by`, optional `filters`, and a non-empty `measures` list. Group/filter fields use `{ "table": "Products", "column": "Category" }`. A dimension field must belong to exactly one directly declared relationship to the fact table. Multi-hop and competing relationship paths are not implemented.
 
+Aggregate filter/measure collection types and their operation/value fields are checked before source files are opened. `filters` and `measures` must be lists of objects. Each `filters[i].op` must be the string `eq`, `neq`, or `in` (omitting it defaults to `eq`); each `measures[i].op` must be a supported operation string. Every filter requires a `value` field: explicit JSON `null` remains an explicit blank filter and is distinct from omitting `value`. An `in` filter requires a list `value`. Invalid types and unsupported operations produce a `RequestError` with an indexed field path such as `measures[0].op`, rather than an uncaught type error. Table/column existence and relationship checks still depend on loaded tables.
+
 Supported measure examples:
 
 ```json

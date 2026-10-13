@@ -655,6 +655,79 @@ class AnalyzeTests(unittest.TestCase):
         with self.assertRaises(analyze.RequestError):
             analyze.run_request(request)
 
+    def test_non_string_filter_operations_are_request_errors(self):
+        for operation in ([], {}):
+            request = {
+                "action": "aggregate", "tables": TABLES, "relationships": RELATIONSHIPS,
+                "fact_table": "Orders",
+                "filters": [{"table": "Orders", "column": "Quantity", "op": operation, "value": 1}],
+                "measures": [{"name": "Rows", "op": "count_rows"}],
+            }
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(analyze.RequestError, r"filters\[0\]\.op must be a string"):
+                    analyze.run_request(request)
+
+    def test_non_string_measure_operations_are_request_errors(self):
+        for operation in ([], {}):
+            request = {
+                "action": "aggregate", "tables": TABLES, "relationships": RELATIONSHIPS,
+                "fact_table": "Orders", "measures": [{"name": "Rows", "op": operation}],
+            }
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(analyze.RequestError, r"measures\[0\]\.op must be a string"):
+                    analyze.run_request(request)
+
+    def test_nested_aggregate_contract_errors_are_rejected_before_file_io(self):
+        tables = {"Sales": {"file": "/path/that/must/not/be/opened.csv"}}
+        invalid_requests = (
+            ({"filters": [{"table": "Sales", "column": "Amount", "op": [], "value": 1}]}, r"filters\[0\]\.op must be a string"),
+            ({"filters": [{"table": "Sales", "column": "Amount", "op": {}, "value": 1}]}, r"filters\[0\]\.op must be a string"),
+            ({"filters": [{"table": "Sales", "column": "Amount", "op": "contains", "value": 1}]}, r"Unsupported filters\[0\]\.op"),
+            ({"filters": [{"table": "Sales", "column": "Amount", "op": "eq"}]}, r"filters\[0\]\.value is required"),
+            ({"filters": [{"table": "Sales", "column": "Amount", "op": "in", "value": None}]}, r"filters\[0\]\.value must be a list"),
+            ({"measures": [{"name": "Total", "op": []}]}, r"measures\[0\]\.op must be a string"),
+            ({"measures": [{"name": "Total", "op": {}}]}, r"measures\[0\]\.op must be a string"),
+            ({"measures": [{"name": "Total", "op": "median"}]}, r"Unsupported measures\[0\]\.op"),
+        )
+        for extra, expected in invalid_requests:
+            request = {"action": "aggregate", "tables": tables, "fact_table": "Sales", "measures": [{"name": "Rows", "op": "count_rows"}], **extra}
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(analyze.RequestError, expected):
+                    analyze.run_request(request)
+
+    def test_explicit_null_filter_value_matches_blank_values(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "sales.csv"
+            source.write_text("Region,Amount\n,1\nWest,2\n", encoding="utf-8")
+            base = {
+                "action": "aggregate",
+                "tables": {"Sales": {"file": str(source)}},
+                "fact_table": "Sales",
+                "measures": [{"name": "Rows", "op": "count_rows"}],
+            }
+            missing = {**base, "filters": [{"table": "Sales", "column": "Region", "op": "eq"}]}
+            with self.assertRaisesRegex(analyze.RequestError, r"filters\[0\]\.value is required"):
+                analyze.run_request(missing)
+            explicit_null = {**base, "filters": [{"table": "Sales", "column": "Region", "op": "eq", "value": None}]}
+            result = analyze.run_request(explicit_null)
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["totals"]["Rows"], 1)
+
+    def test_non_string_measure_operation_cli_exits_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "request.json"
+            config_path.write_text(json.dumps({
+                "action": "aggregate", "tables": TABLES, "relationships": RELATIONSHIPS,
+                "fact_table": "Orders", "measures": [{"name": "Rows", "op": {}}],
+            }), encoding="utf-8")
+            process = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config_path)],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(process.returncode, 2)
+        self.assertIn("measures[0].op must be a string", process.stderr)
+        self.assertNotIn("Traceback", process.stderr)
+
     def test_unknown_top_level_filter_typo_is_rejected_before_file_io(self):
         request = {
             "action": "aggregate",

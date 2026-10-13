@@ -73,6 +73,68 @@ class AnalyzeTests(unittest.TestCase):
         self.assertFalse(result["valid"])
         self.assertEqual(result["relationships"][0]["orphan_count"], 1)
 
+    def test_model_audit_samples_are_opt_in_and_limited(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            one = folder / "one.csv"
+            many = folder / "many.csv"
+            one.write_text("Key\nDUPLICATE-SECRET\nDUPLICATE-SECRET\n", encoding="utf-8")
+            many.write_text("ForeignKey\nORPHAN-SECRET-A\nORPHAN-SECRET-B\n", encoding="utf-8")
+            request = {
+                "action": "model_audit",
+                "tables": {"One": {"file": str(one)}, "Many": {"file": str(many)}},
+                "relationships": [{
+                    "one_table": "One", "one_column": "Key",
+                    "many_table": "Many", "many_column": "ForeignKey",
+                }],
+            }
+            hidden = analyze.run_request(request)
+            visible = analyze.run_request({**request, "include_samples": True, "sample_limit": 1})
+
+        hidden_relationship = hidden["relationships"][0]
+        self.assertEqual(hidden_relationship["duplicate_one_key_count"], 1)
+        self.assertEqual(hidden_relationship["orphan_count"], 2)
+        self.assertEqual(hidden_relationship["duplicate_one_key_samples"], [])
+        self.assertEqual(hidden_relationship["orphan_samples"], [])
+        self.assertNotIn("SECRET", analyze._json_dumps(hidden))
+        visible_relationship = visible["relationships"][0]
+        self.assertEqual(visible_relationship["duplicate_one_key_samples"], ["DUPLICATE-SECRET"])
+        self.assertEqual(visible_relationship["orphan_samples"], ["ORPHAN-SECRET-A"])
+        self.assertNotIn("ORPHAN-SECRET-B", analyze._json_dumps(visible))
+
+    def test_inventory_samples_are_opt_in_and_limited(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "source.csv"
+            path.write_text("Name\nFIRST-SECRET\nSECOND-SECRET\n", encoding="utf-8")
+            request = {"action": "inventory", "tables": {"Sales": {"file": str(path)}}}
+            hidden = analyze.run_request(request)
+            visible = analyze.run_request({**request, "include_samples": True, "sample_limit": 1})
+
+        hidden_result = analyze._json_dumps(hidden)
+        self.assertEqual(hidden["tables"]["Sales"]["fields"][0]["sample_values"], [])
+        self.assertNotIn("SECRET", hidden_result)
+        self.assertNotIn("SECRET", analyze.format_markdown(hidden))
+        visible_result = analyze._json_dumps(visible)
+        self.assertEqual(visible["tables"]["Sales"]["fields"][0]["sample_values"], ["FIRST-SECRET"])
+        self.assertIn("FIRST-SECRET", visible_result)
+        self.assertNotIn("SECOND-SECRET", visible_result)
+
+    def test_invalid_sample_policy_is_rejected_before_file_io(self):
+        request = {
+            "action": "inventory",
+            "tables": {"Sales": {"file": "/path/that/must/not/be/opened.csv"}},
+            "include_samples": "yes",
+        }
+        with self.assertRaisesRegex(analyze.RequestError, "include_samples.*boolean"):
+            analyze.run_request(request)
+        request["include_samples"] = True
+        request["sample_limit"] = True
+        with self.assertRaisesRegex(analyze.RequestError, "sample_limit.*0.*5"):
+            analyze.run_request(request)
+        request["sample_limit"] = 6
+        with self.assertRaisesRegex(analyze.RequestError, "sample_limit.*0.*5"):
+            analyze.run_request(request)
+
     def test_grouped_sales_aggregate_matches_fixture(self):
         request = {
             "action": "aggregate",
@@ -140,6 +202,7 @@ class AnalyzeTests(unittest.TestCase):
                 results[suffix] = analyze.run_request({
                     "action": "inventory",
                     "tables": {"Sales": {"file": str(path)}},
+                    "include_samples": True,
                 })
         for result in results.values():
             self.assertTrue(result["valid"])
@@ -580,7 +643,7 @@ class AnalyzeTests(unittest.TestCase):
             folder.mkdir()
             path = folder / "地域.csv"
             path.write_text("City,Amount\nMünchen,12\n", encoding="utf-8")
-            result = analyze.run_request({"action": "inventory", "tables": {"Sales": {"file": str(path)}}})
+            result = analyze.run_request({"action": "inventory", "tables": {"Sales": {"file": str(path)}}, "include_samples": True})
         self.assertEqual(result["tables"]["Sales"]["fields"][0]["sample_values"], ["München"])
 
     def test_unknown_filter_column_is_a_request_error(self):

@@ -35,12 +35,13 @@ class RequestError(ValueError):
     """A request or source file is invalid or outside the helper's scope."""
 
 
+_SAMPLE_POLICY_KEYS = frozenset({"include_samples", "sample_limit"})
 _REQUEST_KEYS = {
-    "inventory": frozenset({"action", "tables"}),
-    "model_audit": frozenset({"action", "tables", "relationships"}),
+    "inventory": frozenset({"action", "tables"}) | _SAMPLE_POLICY_KEYS,
+    "model_audit": frozenset({"action", "tables", "relationships"}) | _SAMPLE_POLICY_KEYS,
     "aggregate": frozenset({
         "action", "tables", "relationships", "fact_table", "group_by", "filters", "measures",
-    }),
+    }) | _SAMPLE_POLICY_KEYS,
 }
 
 
@@ -61,6 +62,16 @@ def _validate_request_keys(config: dict[str, Any]) -> str:
             message += f"; did you mean {suggestion[0]!r}?"
         raise RequestError(message)
     return action
+
+
+def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
+    include_samples = config.get("include_samples", False)
+    if not isinstance(include_samples, bool):
+        raise RequestError("'include_samples' must be a boolean")
+    sample_limit = config.get("sample_limit", 5)
+    if isinstance(sample_limit, bool) or not isinstance(sample_limit, int) or not 0 <= sample_limit <= 5:
+        raise RequestError("'sample_limit' must be an integer from 0 to 5")
+    return include_samples, sample_limit
 
 
 # Addition and multiplication of finite Decimal inputs are exact unless the
@@ -398,6 +409,7 @@ def infer_type(values: list[Any]) -> str:
 
 
 def inventory(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    include_samples, sample_limit = _sample_policy(config)
     summaries: dict[str, Any] = {}
     for name, rows in tables.items():
         columns = list(rows.columns)
@@ -415,7 +427,10 @@ def inventory(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
                 "nonmissing": len(nonmissing),
                 "missing": len(values) - len(nonmissing),
                 "distinct": len({_key(value) for value in nonmissing}),
-                "sample_values": [_json_value(value) for value in nonmissing[:5]],
+                "sample_values": (
+                    [_json_value(value) for value in nonmissing[:sample_limit]]
+                    if include_samples else []
+                ),
             })
         summaries[name] = {
             "file": config["tables"][name]["file"],
@@ -445,6 +460,7 @@ def _column(tables: dict[str, list[dict[str, Any]]], table: str, column: str) ->
 
 
 def audit_relationships(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    include_samples, sample_limit = _sample_policy(config)
     relationships = config.get("relationships", [])
     if not isinstance(relationships, list):
         raise RequestError("'relationships' must be a list")
@@ -481,10 +497,16 @@ def audit_relationships(config: dict[str, Any], tables: dict[str, list[dict[str,
             "valid": valid,
             "one_key_nulls": null_one,
             "duplicate_one_key_count": len(duplicate_keys),
-            "duplicate_one_key_samples": [_json_value(value) for value in duplicate_keys[:5]],
+            "duplicate_one_key_samples": (
+                [_json_value(value) for value in duplicate_keys[:sample_limit]]
+                if include_samples else []
+            ),
             "many_key_nulls": null_many,
             "orphan_count": len(orphan_values),
-            "orphan_samples": [_json_value(value) for value in list(dict.fromkeys(orphan_values))[:5]],
+            "orphan_samples": (
+                [_json_value(value) for value in list(dict.fromkeys(orphan_values))[:sample_limit]]
+                if include_samples else []
+            ),
         })
     valid = all(result["valid"] for result in results)
     warnings = [] if results else ["No relationships were declared; relationship behavior was not checked."]
@@ -806,6 +828,7 @@ def run_request(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise RequestError("Request root must be a JSON object")
     action = _validate_request_keys(config)
+    _sample_policy(config)
     tables = load_tables(config)
     if action == "inventory":
         return inventory(config, tables)

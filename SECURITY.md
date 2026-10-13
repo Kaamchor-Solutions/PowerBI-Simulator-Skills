@@ -11,3 +11,5 @@ Please do not disclose suspected vulnerabilities in a public issue. Use GitHub's
 ## Safe data handling
 
 Use fabricated, minimal fixtures in tests and bug reports. Do not commit source data, credentials, or personal identifiers. Do not upload sensitive files to an LLM or external service unless authorized and covered by an appropriate review. Review generated reports and small-group summaries before sharing; aggregation does not guarantee anonymity.
+
+The CLI refuses output paths that resolve to the request or a declared source file, and checks existing file identity to catch hard-link aliases. This guard reduces accidental overwrite risk but is not a race-proof sandbox and does not make use on a hostile shared filesystem safe.

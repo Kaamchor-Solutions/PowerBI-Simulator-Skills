@@ -3,6 +3,7 @@ import csv
 from contextlib import redirect_stderr
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -591,6 +592,57 @@ class AnalyzeTests(unittest.TestCase):
             config = {"tables": {"Sales": {"file": str(source)}}}
             with self.assertRaises(analyze.RequestError):
                 analyze.ensure_output_safe(source, Path(temp) / "request.json", config)
+
+    def test_output_cannot_overwrite_hard_link_to_source_or_request(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "source.csv"
+            source.write_text("Amount\nPRIVATE-SENTINEL\n", encoding="utf-8")
+            request_path = folder / "request.json"
+            request_path.write_text('{"synthetic":"REQUEST-SENTINEL"}\n', encoding="utf-8")
+            config = {"tables": {"Sales": {"file": str(source)}}}
+
+            for index, reserved_path in enumerate((source, request_path)):
+                alias = folder / f"output-alias-{index}"
+                try:
+                    os.link(reserved_path, alias)
+                except OSError as exc:
+                    self.skipTest(f"filesystem does not support hard links: {exc}")
+                before = reserved_path.read_bytes()
+                self.assertNotEqual(alias.resolve(), reserved_path.resolve())
+                self.assertTrue(os.path.samefile(alias, reserved_path))
+                with self.assertRaisesRegex(analyze.RequestError, "same file"):
+                    analyze.ensure_output_safe(alias, request_path, config)
+                self.assertEqual(reserved_path.read_bytes(), before)
+
+    def test_both_cli_writers_reject_hard_link_to_source_without_modifying_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "source.csv"
+            source.write_text("Amount\nPRIVATE-SENTINEL\n", encoding="utf-8")
+            before = source.read_bytes()
+            analysis = {"action": "inventory", "tables": {"Sales": {"file": str(source)}}}
+            for script, config_object, suffix in (
+                ("analyze.py", analysis, "analyze"),
+                ("bi_report.py", {"analyses": [{"name": "Source", "request": analysis}]}, "report"),
+            ):
+                config_path = folder / f"{suffix}.json"
+                config_path.write_text(json.dumps(config_object), encoding="utf-8")
+                output = folder / f"{suffix}-output.md"
+                try:
+                    os.link(source, output)
+                except OSError as exc:
+                    self.skipTest(f"filesystem does not support hard links: {exc}")
+                completed = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / script), "--config", str(config_path), "--output", str(output)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                self.assertIn("same file", completed.stderr)
+                self.assertEqual(source.read_bytes(), before)
+                output.unlink()
 
     def test_cli_output_write_error_is_clean_and_nonzero(self):
         with tempfile.TemporaryDirectory() as temp:

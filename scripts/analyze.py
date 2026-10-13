@@ -827,10 +827,22 @@ def _input_files(value: Any):
 
 def ensure_output_safe(output_path: str | Path, config_path: str | Path, config: Any) -> None:
     target = Path(output_path).expanduser().resolve()
-    reserved = {Path(config_path).expanduser().resolve()}
-    reserved.update(Path(filename).expanduser().resolve() for filename in _input_files(config))
-    if target in reserved:
+    reserved = [Path(config_path).expanduser().resolve()]
+    reserved.extend(Path(filename).expanduser().resolve() for filename in _input_files(config))
+    if target in set(reserved):
         raise RequestError("Output path must not overwrite the request JSON or any declared source file")
+    if target.exists():
+        for input_path in reserved:
+            if not input_path.exists():
+                continue
+            try:
+                aliases_input = target.samefile(input_path)
+            except OSError as exc:
+                raise RequestError(f"Could not safely check output file identity: {exc}") from exc
+            if aliases_input:
+                raise RequestError(
+                    f"Output path must not overwrite the request JSON or any declared source file (same file: {input_path})"
+                )
 
 
 def _markdown_cell(value: Any) -> str:

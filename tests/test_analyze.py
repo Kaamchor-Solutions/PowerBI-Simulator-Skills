@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 from decimal import (
     Decimal,
     Inexact,
@@ -686,6 +687,17 @@ class AnalyzeTests(unittest.TestCase):
                     "fact_table": "Flags",
                     "measures": [{"name": "Sum", "op": "sum", "table": "Flags", "column": "Flag"}],
                 })
+
+    def test_xlsx_archive_expansion_limit_precedes_workbook_loading(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "oversized.xlsx"
+            with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("xl/worksheet.xml", b"x" * 101)
+            with patch.object(analyze, "_MAX_XLSX_UNCOMPRESSED_BYTES", 100), patch("openpyxl.load_workbook") as load_workbook:
+                with self.assertRaisesRegex(analyze.RequestError, "uncompressed.*maximum") as error:
+                    analyze.load_table("Sales", {"file": str(path)})
+        self.assertEqual(error.exception.code, "resource_limit")
+        load_workbook.assert_not_called()
 
     def test_corrupt_xlsx_becomes_clean_cli_and_report_error(self):
         with tempfile.TemporaryDirectory() as temp:

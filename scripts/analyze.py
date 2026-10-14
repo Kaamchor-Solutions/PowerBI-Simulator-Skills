@@ -10,6 +10,7 @@ import difflib
 import json
 import math
 import sys
+import zipfile
 from collections import Counter, defaultdict
 from decimal import (
     Clamped,
@@ -55,6 +56,7 @@ _MEASURE_OPERATIONS = frozenset({
 _MAX_EXPRESSION_LENGTH = 4096
 _MAX_EXPRESSION_AST_NODES = 1024
 _MAX_EXPRESSION_AST_DEPTH = 64
+_MAX_XLSX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 
 
 def _validate_request_keys(config: dict[str, Any]) -> str:
@@ -303,6 +305,20 @@ def _headers_and_rows(headers: list[Any], data_rows: list[tuple[Any, ...]], tabl
     return TableRows(rows, clean_headers)
 
 
+def _check_xlsx_archive_size(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            uncompressed_size = sum(member.file_size for member in archive.infolist())
+    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise RequestError(f"Could not read Excel workbook {path}: {exc}") from exc
+    if uncompressed_size > _MAX_XLSX_UNCOMPRESSED_BYTES:
+        raise RequestError(
+            f"Excel workbook uncompressed archive size ({uncompressed_size} bytes) exceeds maximum "
+            f"({_MAX_XLSX_UNCOMPRESSED_BYTES} bytes)",
+            code="resource_limit",
+        )
+
+
 def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(spec, dict) or not isinstance(spec.get("file"), str):
         raise RequestError(f"Table {table_name!r} must define a string 'file' path")
@@ -338,6 +354,7 @@ def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
         except csv.Error as exc:
             raise RequestError(f"Could not parse {path}: {exc}") from exc
     if suffix == ".xlsx":
+        _check_xlsx_archive_size(path)
         try:
             from openpyxl import load_workbook
         except ImportError as exc:

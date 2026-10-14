@@ -52,6 +52,9 @@ _FILTER_OPERATIONS = frozenset({"eq", "neq", "in"})
 _MEASURE_OPERATIONS = frozenset({
     "count_rows", "count_nonblank", "distinct_count", "sum", "mean", "min", "max", "sum_expression",
 })
+_MAX_EXPRESSION_LENGTH = 4096
+_MAX_EXPRESSION_AST_NODES = 1024
+_MAX_EXPRESSION_AST_DEPTH = 64
 
 
 def _validate_request_keys(config: dict[str, Any]) -> str:
@@ -141,6 +144,12 @@ def _validate_aggregate_operations(config: dict[str, Any]) -> None:
                 raise RequestError(f"measures[{index}].expression must be a string", code="invalid_type", field_path=f"measures[{index}].expression")
             if not expression.strip():
                 raise RequestError(f"measures[{index}].expression must not be empty", code="invalid_value", field_path=f"measures[{index}].expression")
+            if len(expression) > _MAX_EXPRESSION_LENGTH:
+                raise RequestError(
+                    f"Arithmetic expression exceeds maximum length of {_MAX_EXPRESSION_LENGTH} characters",
+                    code="resource_limit",
+                    field_path=f"measures[{index}].expression",
+                )
         elif operation != "count_rows":
             _field_spec(measure, f"measures[{index}]")
 
@@ -661,10 +670,35 @@ def _validate_field_relation(
 def _compile_expression(expression: Any, fact_columns: set[str]):
     if not isinstance(expression, str) or not expression.strip():
         raise RequestError("sum_expression requires a non-empty arithmetic 'expression'")
+    if len(expression) > _MAX_EXPRESSION_LENGTH:
+        raise RequestError(
+            f"Arithmetic expression exceeds maximum length of {_MAX_EXPRESSION_LENGTH} characters",
+            code="resource_limit",
+        )
     try:
         tree = ast.parse(expression, mode="eval")
+    except RecursionError as exc:
+        raise RequestError("Arithmetic expression exceeds the parser recursion limit", code="resource_limit") from exc
     except SyntaxError as exc:
         raise RequestError(f"Invalid arithmetic expression: {exc.msg}") from exc
+
+    node_count = 0
+    pending = [(tree, 1)]
+    while pending:
+        node, depth = pending.pop()
+        node_count += 1
+        if node_count > _MAX_EXPRESSION_AST_NODES:
+            raise RequestError(
+                f"Arithmetic expression exceeds maximum AST node count of {_MAX_EXPRESSION_AST_NODES}",
+                code="resource_limit",
+            )
+        if depth > _MAX_EXPRESSION_AST_DEPTH:
+            raise RequestError(
+                f"Arithmetic expression exceeds maximum AST depth of {_MAX_EXPRESSION_AST_DEPTH}",
+                code="resource_limit",
+            )
+        pending.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+
     allowed_binary = (ast.Add, ast.Sub, ast.Mult, ast.Div)
     literals: dict[int, Decimal] = {}
 

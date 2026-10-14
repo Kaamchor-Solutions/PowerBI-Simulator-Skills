@@ -615,6 +615,44 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(result["rows_used"], 5)
         self.assertEqual(result["totals"]["Net Sales"], 720)
 
+    def test_arithmetic_expression_resource_limits(self):
+        with patch.object(analyze.ast, "parse") as parse:
+            with self.assertRaisesRegex(analyze.RequestError, "maximum length") as length_error:
+                analyze._compile_expression("1" * (analyze._MAX_EXPRESSION_LENGTH + 1), {"Amount"})
+        self.assertEqual(length_error.exception.code, "resource_limit")
+        parse.assert_not_called()
+        request = {
+            "action": "aggregate",
+            "tables": {"Sales": {"file": "/path/that/must/not/be/opened.csv"}},
+            "fact_table": "Sales",
+            "measures": [{
+                "name": "Too long",
+                "op": "sum_expression",
+                "expression": "1" * (analyze._MAX_EXPRESSION_LENGTH + 1),
+            }],
+        }
+        with self.assertRaisesRegex(analyze.RequestError, "maximum length") as preflight_error:
+            analyze.run_request(request)
+        self.assertEqual(preflight_error.exception.code, "resource_limit")
+        self.assertEqual(preflight_error.exception.field_path, "measures[0].expression")
+
+        def balanced_sum(term_count):
+            if term_count == 1:
+                return "1"
+            midpoint = term_count // 2
+            return f"({balanced_sum(midpoint)} + {balanced_sum(term_count - midpoint)})"
+
+        many_nodes = balanced_sum(400)
+        self.assertLess(len(many_nodes), analyze._MAX_EXPRESSION_LENGTH)
+        with self.assertRaisesRegex(analyze.RequestError, "maximum AST node count") as node_error:
+            analyze._compile_expression(many_nodes, {"Amount"})
+        self.assertEqual(node_error.exception.code, "resource_limit")
+
+        deep_expression = "-" * (analyze._MAX_EXPRESSION_AST_DEPTH + 1) + "1"
+        with self.assertRaisesRegex(analyze.RequestError, "maximum AST depth") as depth_error:
+            analyze._compile_expression(deep_expression, {"Amount"})
+        self.assertEqual(depth_error.exception.code, "resource_limit")
+
     def test_expression_cannot_call_functions(self):
         with self.assertRaises(analyze.RequestError):
             analyze._compile_expression("__import__('os').system('echo unsafe')", {"Quantity"})

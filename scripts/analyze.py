@@ -79,13 +79,21 @@ def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
 
 
 def _validate_aggregate_operations(config: dict[str, Any]) -> None:
+    group_by = config.get("group_by", [])
     filters = config.get("filters", [])
     measures = config.get("measures")
-    if not isinstance(filters, list) or not isinstance(measures, list) or not measures:
-        raise RequestError("aggregate requires 'filters' to be a list and 'measures' to be a non-empty list")
+    if not isinstance(group_by, list):
+        raise RequestError("'group_by' must be a list")
+    if not isinstance(filters, list):
+        raise RequestError("'filters' must be a list")
+    if not isinstance(measures, list) or not measures:
+        raise RequestError("'measures' must be a non-empty list")
+    for index, item in enumerate(group_by):
+        _field_spec(item, f"group_by[{index}]")
     for index, item in enumerate(filters):
         if not isinstance(item, dict):
             raise RequestError(f"filters[{index}] must be an object")
+        _field_spec(item, f"filters[{index}]")
         operation = item.get("op", "eq")
         if not isinstance(operation, str):
             raise RequestError(f"filters[{index}].op must be a string")
@@ -95,14 +103,27 @@ def _validate_aggregate_operations(config: dict[str, Any]) -> None:
             raise RequestError(f"filters[{index}].value is required; use null explicitly to match blank values")
         if operation == "in" and not isinstance(item.get("value"), list):
             raise RequestError(f"filters[{index}].value must be a list when op is 'in'")
+    measure_names: set[str] = set()
     for index, measure in enumerate(measures):
         if not isinstance(measure, dict):
             raise RequestError(f"measures[{index}] must be an object")
+        name = measure.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise RequestError(f"measures[{index}].name must be a non-empty string")
+        if name in measure_names:
+            raise RequestError(f"Duplicate measure name at measures[{index}].name: {name!r}")
+        measure_names.add(name)
         operation = measure.get("op")
         if not isinstance(operation, str):
             raise RequestError(f"measures[{index}].op must be a string")
         if operation not in _MEASURE_OPERATIONS:
             raise RequestError(f"Unsupported measures[{index}].op {operation!r}; use {sorted(_MEASURE_OPERATIONS)}")
+        if operation == "sum_expression":
+            expression = measure.get("expression")
+            if not isinstance(expression, str) or not expression.strip():
+                raise RequestError(f"measures[{index}].expression must be a non-empty string")
+        elif operation != "count_rows":
+            _field_spec(measure, f"measures[{index}]")
 
 
 # Addition and multiplication of finite Decimal inputs are exact unless the
@@ -581,9 +602,12 @@ def _related_row(
 
 
 def _field_spec(value: Any, label: str) -> dict[str, str]:
-    if not isinstance(value, dict) or not isinstance(value.get("table"), str) or not isinstance(value.get("column"), str):
-        raise RequestError(f"{label} must be an object with string 'table' and 'column' fields")
-    return {"table": value["table"], "column": value["column"]}
+    if not isinstance(value, dict):
+        raise RequestError(f"{label} must be an object with non-empty string 'table' and 'column' fields")
+    table, column = value.get("table"), value.get("column")
+    if not isinstance(table, str) or not table.strip() or not isinstance(column, str) or not column.strip():
+        raise RequestError(f"{label} must be an object with non-empty string 'table' and 'column' fields")
+    return {"table": table, "column": column}
 
 
 def _validate_field_relation(

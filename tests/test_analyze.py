@@ -732,6 +732,25 @@ class AnalyzeTests(unittest.TestCase):
                 with self.assertRaisesRegex(analyze.RequestError, expected):
                     analyze.run_request(request)
 
+    def test_aggregate_field_shapes_and_duplicate_names_are_rejected_before_file_io(self):
+        invalid_requests = (
+            ({"group_by": {}}, r"'group_by' must be a list"),
+            ({"group_by": [{"table": [], "column": "Amount"}]}, r"group_by\[0\].*string"),
+            ({"group_by": [{"table": " ", "column": "Amount"}]}, r"group_by\[0\].*non-empty string"),
+            ({"filters": [{"table": "Sales", "column": {}, "op": "eq", "value": 1}]}, r"filters\[0\].*string"),
+            ({"measures": [{"name": "Total", "op": "sum", "table": "Sales"}]}, r"measures\[0\].*string"),
+            ({"measures": [{"name": "", "op": "count_rows"}]}, r"measures\[0\]\.name"),
+            ({"measures": [{"name": "Rows", "op": "count_rows"}, {"name": "Rows", "op": "count_rows"}]}, r"Duplicate measure name at measures\[1\]\.name"),
+            ({"measures": [{"name": "Expression", "op": "sum_expression", "expression": []}]}, r"measures\[0\]\.expression"),
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            tables = {"Sales": {"file": str(Path(temp) / "must-not-be-opened.csv")}}
+            for extra, expected in invalid_requests:
+                request = {"action": "aggregate", "tables": tables, "fact_table": "Sales", "measures": [{"name": "Rows", "op": "count_rows"}], **extra}
+                with self.subTest(extra=extra):
+                    with self.assertRaisesRegex(analyze.RequestError, expected):
+                        analyze.run_request(request)
+
     def test_explicit_null_filter_value_matches_blank_values(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "sales.csv"

@@ -976,14 +976,49 @@ def _markdown_cell(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
+def _model_audit_diagnostics_markdown(result: dict[str, Any]) -> list[str]:
+    lines = [
+        "Status: **invalid**",
+        "",
+        "## Relationship diagnostics",
+        "",
+        "| One side | Many side | Valid | Null one-side keys | Duplicate one-side keys | Duplicate samples (opt-in) | Null many-side keys | Orphan many-side keys | Orphan samples (opt-in) |",
+        "|---|---|---:|---:|---:|---|---:|---:|---|",
+    ]
+    for relationship in result.get("relationships", []):
+        one_side = f"{relationship['one_table']}.{relationship['one_column']}"
+        many_side = f"{relationship['many_table']}.{relationship['many_column']}"
+        duplicate_samples = ", ".join(
+            _markdown_cell(value) for value in relationship.get("duplicate_one_key_samples", [])
+        ) or "—"
+        orphan_samples = ", ".join(
+            _markdown_cell(value) for value in relationship.get("orphan_samples", [])
+        ) or "—"
+        lines.append(
+            f"| {_markdown_cell(one_side)} | {_markdown_cell(many_side)} | {relationship['valid']} "
+            f"| {relationship['one_key_nulls']} | {relationship['duplicate_one_key_count']} "
+            f"| {duplicate_samples} | {relationship['many_key_nulls']} | {relationship['orphan_count']} | {orphan_samples} |"
+        )
+    for warning in result.get("warnings", []):
+        lines.extend(["", f"Warning: {_markdown_cell(warning)}"])
+    if result.get("scope_note"):
+        lines.extend(["", str(result["scope_note"])])
+    return lines
+
+
 def format_markdown(result: dict[str, Any]) -> str:
     action = result.get("action", "analysis")
     lines = [f"# Power BI-style {action.replace('_', ' ')}", "", "> Helper output; not Power BI rendering or DAX evaluation.", ""]
     if not result.get("valid", False):
-        lines.extend(["## RESULT INVALID", "", str(result.get("reason") or result.get("error") or "Validation failed."), ""])
+        invalid_reason = result.get("reason") or result.get("error")
+        if not invalid_reason and action == "model_audit" and isinstance(result.get("relationships"), list):
+            invalid_reason = "Declared relationship integrity checks failed; see the diagnostics below."
+        lines.extend(["## RESULT INVALID", "", str(invalid_reason or "Validation failed."), ""])
         audit = result.get("model_audit")
         if audit:
             lines.append(_json_dumps(audit, indent=2))
+        elif action == "model_audit" and isinstance(result.get("relationships"), list):
+            lines.extend(_model_audit_diagnostics_markdown(result))
         return "\n".join(lines).rstrip() + "\n"
     if action == "inventory":
         for table, info in result["tables"].items():

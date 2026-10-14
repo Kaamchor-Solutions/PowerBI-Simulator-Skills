@@ -78,8 +78,8 @@ class AnalyzeTests(unittest.TestCase):
             folder = Path(temp)
             one = folder / "one.csv"
             many = folder / "many.csv"
-            one.write_text("Key\nDUPLICATE-SECRET\nDUPLICATE-SECRET\n", encoding="utf-8")
-            many.write_text("ForeignKey\nORPHAN-SECRET-A\nORPHAN-SECRET-B\n", encoding="utf-8")
+            one.write_text("Key,Label\nDUPLICATE-SECRET,A\nDUPLICATE-SECRET,B\n,Null-Key\n", encoding="utf-8")
+            many.write_text("ForeignKey,Label\nORPHAN-SECRET-A,A\nORPHAN-SECRET-B,B\n,Null-Key\n", encoding="utf-8")
             request = {
                 "action": "model_audit",
                 "tables": {"One": {"file": str(one)}, "Many": {"file": str(many)}},
@@ -92,15 +92,29 @@ class AnalyzeTests(unittest.TestCase):
             visible = analyze.run_request({**request, "include_samples": True, "sample_limit": 1})
 
         hidden_relationship = hidden["relationships"][0]
+        self.assertEqual(hidden_relationship["one_key_nulls"], 1)
         self.assertEqual(hidden_relationship["duplicate_one_key_count"], 1)
         self.assertEqual(hidden_relationship["orphan_count"], 2)
+        self.assertEqual(hidden_relationship["many_key_nulls"], 1)
         self.assertEqual(hidden_relationship["duplicate_one_key_samples"], [])
         self.assertEqual(hidden_relationship["orphan_samples"], [])
         self.assertNotIn("SECRET", analyze._json_dumps(hidden))
+        hidden_markdown = analyze.format_markdown(hidden)
+        self.assertIn("## Relationship diagnostics", hidden_markdown)
+        self.assertIn("Null one-side keys", hidden_markdown)
+        self.assertIn("Duplicate one-side keys", hidden_markdown)
+        self.assertIn("Null many-side keys", hidden_markdown)
+        self.assertIn("Orphan many-side keys", hidden_markdown)
+        self.assertIn("| False | 1 | 1 | — | 1 | 2 | — |", hidden_markdown)
+        self.assertNotIn("SECRET", hidden_markdown)
         visible_relationship = visible["relationships"][0]
         self.assertEqual(visible_relationship["duplicate_one_key_samples"], ["DUPLICATE-SECRET"])
         self.assertEqual(visible_relationship["orphan_samples"], ["ORPHAN-SECRET-A"])
         self.assertNotIn("ORPHAN-SECRET-B", analyze._json_dumps(visible))
+        visible_markdown = analyze.format_markdown(visible)
+        self.assertIn("DUPLICATE-SECRET", visible_markdown)
+        self.assertIn("ORPHAN-SECRET-A", visible_markdown)
+        self.assertNotIn("ORPHAN-SECRET-B", visible_markdown)
 
     def test_inventory_samples_are_opt_in_and_limited(self):
         with tempfile.TemporaryDirectory() as temp:

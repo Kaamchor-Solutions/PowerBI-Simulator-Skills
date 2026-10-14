@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from decimal import (
     Decimal,
     Inexact,
@@ -161,7 +162,9 @@ class AnalyzeTests(unittest.TestCase):
                 {"name": "Order Count", "op": "distinct_count", "table": "Orders", "column": "OrderID"},
             ],
         }
-        result = analyze.run_request(request)
+        with patch.object(analyze, "_compile_expression", wraps=analyze._compile_expression) as compile_expression:
+            result = analyze.run_request(request)
+        self.assertEqual(compile_expression.call_count, 1)
         self.assertTrue(result["valid"])
         self.assertEqual(result["totals"]["Net Sales"], 1705)
         self.assertEqual(result["totals"]["Order Count"], 10)

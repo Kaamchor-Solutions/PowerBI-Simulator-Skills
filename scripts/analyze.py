@@ -28,7 +28,7 @@ from decimal import (
     localcontext,
 )
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class RequestError(ValueError):
@@ -786,6 +786,7 @@ def _measure_value(
     measure: dict[str, Any], rows: list[dict[str, Any]], fact_table: str,
     tables: dict[str, list[dict[str, Any]]], relationships: list[dict[str, Any]],
     indexes: dict[tuple[str, str, str], dict[str, dict[str, Any]]],
+    expression_evaluator: Callable[[dict[str, Any]], Decimal | None] | None = None,
 ) -> tuple[Any, dict[str, int]]:
     if not isinstance(measure, dict):
         raise RequestError("Each measure must be an object")
@@ -798,7 +799,9 @@ def _measure_value(
     if operation == "count_rows":
         return len(rows), {"rows_considered": len(rows), "values_used": len(rows), "blank_or_skipped": 0}
     if operation == "sum_expression":
-        evaluator = _compile_expression(measure.get("expression"), set(_table_columns(tables, fact_table)))
+        evaluator = expression_evaluator
+        if evaluator is None:
+            evaluator = _compile_expression(measure.get("expression"), set(_table_columns(tables, fact_table)))
         values = []
         skipped = 0
         for index, row in enumerate(rows, start=1):
@@ -854,6 +857,8 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
         field = _field_spec(item, f"group_by[{index}]")
         _validate_field_relation(field, fact_table, tables, relationships)
     measure_names = []
+    compiled_expressions: dict[str, Callable[[dict[str, Any]], Decimal | None]] = {}
+    fact_columns: set[str] | None = None
     for index, measure in enumerate(measures):
         if not isinstance(measure, dict):
             raise RequestError(f"measures[{index}] must be an object")
@@ -867,7 +872,9 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
         if operation not in _MEASURE_OPERATIONS:
             raise RequestError(f"Unsupported measures[{index}].op {operation!r}; use {sorted(_MEASURE_OPERATIONS)}")
         if operation == "sum_expression":
-            _compile_expression(measure.get("expression"), set(_table_columns(tables, fact_table)))
+            if fact_columns is None:
+                fact_columns = set(_table_columns(tables, fact_table))
+            compiled_expressions[name] = _compile_expression(measure.get("expression"), fact_columns)
         elif operation != "count_rows":
             field = _field_spec(measure, f"Measure {name!r}")
             _validate_field_relation(field, fact_table, tables, relationships)
@@ -883,7 +890,10 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
     def evaluate(rows: list[dict[str, Any]]):
         values, audits = {}, {}
         for measure in measures:
-            result, info = _measure_value(measure, rows, fact_table, tables, relationships, indexes)
+            result, info = _measure_value(
+                measure, rows, fact_table, tables, relationships, indexes,
+                expression_evaluator=compiled_expressions.get(measure["name"]),
+            )
             values[measure["name"]] = result
             audits[measure["name"]] = info
         return values, audits

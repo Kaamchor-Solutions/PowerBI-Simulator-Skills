@@ -26,6 +26,8 @@ An `aggregate` request also supplies `fact_table`, optional `group_by`, optional
 
 Aggregate collection types and nested field shapes are checked before source files are opened. `group_by`, `filters`, and `measures` must be lists; field references require non-empty string `table` and `column` values. Each `filters[i].op` must be the string `eq`, `neq`, or `in` (omitting it defaults to `eq`); each `measures[i].op` must be a supported operation string. Every filter requires a `value` field: explicit JSON `null` remains an explicit blank filter and is distinct from omitting `value`. An `in` filter requires a list `value`. Measure names must be non-empty and unique, and `sum_expression` requires a non-empty string expression. Malformed types, unsupported operations, and duplicate names produce a `RequestError` with an indexed field path such as `measures[0].op`, rather than an uncaught type error. Table/column existence and relationship checks still depend on loaded tables.
 
+For handled JSON parse and request-validation failures in the analyzer CLI's default JSON mode, the JSON result retains the human-readable `error` message and also includes a stable `error_code`; field-specific validation adds `error_path`. Current codes include `invalid_type`, `invalid_value`, `missing_field`, `unsupported_value`, `unsupported_operation`, `duplicate_name`, `unknown_field`, `duplicate_json_key`, `invalid_json_constant`, `invalid_json`, `input_error`, and the fallback `invalid_request`. The JSON result is written to stdout and the human diagnostic to stderr.
+
 Supported measure examples:
 
 ```json

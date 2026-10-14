@@ -34,6 +34,11 @@ from typing import Any
 class RequestError(ValueError):
     """A request or source file is invalid or outside the helper's scope."""
 
+    def __init__(self, message: str, *, code: str = "invalid_request", field_path: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.field_path = field_path
+
 
 _SAMPLE_POLICY_KEYS = frozenset({"include_samples", "sample_limit"})
 _REQUEST_KEYS = {
@@ -52,9 +57,9 @@ _MEASURE_OPERATIONS = frozenset({
 def _validate_request_keys(config: dict[str, Any]) -> str:
     action = config.get("action")
     if not isinstance(action, str):
-        raise RequestError("'action' must be a string: inventory, model_audit, aggregate")
+        raise RequestError("'action' must be a string: inventory, model_audit, aggregate", code="invalid_type", field_path="action")
     if action not in _REQUEST_KEYS:
-        raise RequestError("'action' must be one of: inventory, model_audit, aggregate")
+        raise RequestError("'action' must be one of: inventory, model_audit, aggregate", code="unsupported_value", field_path="action")
 
     allowed = _REQUEST_KEYS[action]
     unknown = sorted((key for key in config if key not in allowed), key=str)
@@ -64,64 +69,78 @@ def _validate_request_keys(config: dict[str, Any]) -> str:
         suggestion = difflib.get_close_matches(str(key), sorted(allowed), n=1, cutoff=0.6)
         if suggestion:
             message += f"; did you mean {suggestion[0]!r}?"
-        raise RequestError(message)
+        raise RequestError(message, code="unknown_field", field_path=str(key))
     return action
 
 
 def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
     include_samples = config.get("include_samples", False)
     if not isinstance(include_samples, bool):
-        raise RequestError("'include_samples' must be a boolean")
+        raise RequestError("'include_samples' must be a boolean", code="invalid_type", field_path="include_samples")
     sample_limit = config.get("sample_limit", 5)
     if isinstance(sample_limit, bool) or not isinstance(sample_limit, int) or not 0 <= sample_limit <= 5:
-        raise RequestError("'sample_limit' must be an integer from 0 to 5")
+        raise RequestError("'sample_limit' must be an integer from 0 to 5", code="invalid_value", field_path="sample_limit")
     return include_samples, sample_limit
 
 
 def _validate_aggregate_operations(config: dict[str, Any]) -> None:
     group_by = config.get("group_by", [])
     filters = config.get("filters", [])
-    measures = config.get("measures")
     if not isinstance(group_by, list):
-        raise RequestError("'group_by' must be a list")
+        raise RequestError("'group_by' must be a list", code="invalid_type", field_path="group_by")
     if not isinstance(filters, list):
-        raise RequestError("'filters' must be a list")
-    if not isinstance(measures, list) or not measures:
-        raise RequestError("'measures' must be a non-empty list")
+        raise RequestError("'filters' must be a list", code="invalid_type", field_path="filters")
+    if "measures" not in config:
+        raise RequestError("'measures' is required", code="missing_field", field_path="measures")
+    measures = config["measures"]
+    if not isinstance(measures, list):
+        raise RequestError("'measures' must be a list", code="invalid_type", field_path="measures")
+    if not measures:
+        raise RequestError("'measures' must be a non-empty list", code="invalid_value", field_path="measures")
     for index, item in enumerate(group_by):
         _field_spec(item, f"group_by[{index}]")
     for index, item in enumerate(filters):
         if not isinstance(item, dict):
-            raise RequestError(f"filters[{index}] must be an object")
+            raise RequestError(f"filters[{index}] must be an object", code="invalid_type", field_path=f"filters[{index}]")
         _field_spec(item, f"filters[{index}]")
         operation = item.get("op", "eq")
         if not isinstance(operation, str):
-            raise RequestError(f"filters[{index}].op must be a string")
+            raise RequestError(f"filters[{index}].op must be a string", code="invalid_type", field_path=f"filters[{index}].op")
         if operation not in _FILTER_OPERATIONS:
-            raise RequestError(f"Unsupported filters[{index}].op {operation!r}; use {sorted(_FILTER_OPERATIONS)}")
+            raise RequestError(f"Unsupported filters[{index}].op {operation!r}; use {sorted(_FILTER_OPERATIONS)}", code="unsupported_operation", field_path=f"filters[{index}].op")
         if "value" not in item:
-            raise RequestError(f"filters[{index}].value is required; use null explicitly to match blank values")
+            raise RequestError(f"filters[{index}].value is required; use null explicitly to match blank values", code="missing_field", field_path=f"filters[{index}].value")
         if operation == "in" and not isinstance(item.get("value"), list):
-            raise RequestError(f"filters[{index}].value must be a list when op is 'in'")
+            raise RequestError(f"filters[{index}].value must be a list when op is 'in'", code="invalid_type", field_path=f"filters[{index}].value")
     measure_names: set[str] = set()
     for index, measure in enumerate(measures):
         if not isinstance(measure, dict):
-            raise RequestError(f"measures[{index}] must be an object")
+            raise RequestError(f"measures[{index}] must be an object", code="invalid_type", field_path=f"measures[{index}]")
+        if "name" not in measure:
+            raise RequestError(f"measures[{index}].name is required", code="missing_field", field_path=f"measures[{index}].name")
         name = measure.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise RequestError(f"measures[{index}].name must be a non-empty string")
+        if not isinstance(name, str):
+            raise RequestError(f"measures[{index}].name must be a string", code="invalid_type", field_path=f"measures[{index}].name")
+        if not name.strip():
+            raise RequestError(f"measures[{index}].name must not be empty", code="invalid_value", field_path=f"measures[{index}].name")
         if name in measure_names:
-            raise RequestError(f"Duplicate measure name at measures[{index}].name: {name!r}")
+            raise RequestError(f"Duplicate measure name at measures[{index}].name: {name!r}", code="duplicate_name", field_path=f"measures[{index}].name")
         measure_names.add(name)
+        if "op" not in measure:
+            raise RequestError(f"measures[{index}].op is required", code="missing_field", field_path=f"measures[{index}].op")
         operation = measure.get("op")
         if not isinstance(operation, str):
-            raise RequestError(f"measures[{index}].op must be a string")
+            raise RequestError(f"measures[{index}].op must be a string", code="invalid_type", field_path=f"measures[{index}].op")
         if operation not in _MEASURE_OPERATIONS:
-            raise RequestError(f"Unsupported measures[{index}].op {operation!r}; use {sorted(_MEASURE_OPERATIONS)}")
+            raise RequestError(f"Unsupported measures[{index}].op {operation!r}; use {sorted(_MEASURE_OPERATIONS)}", code="unsupported_operation", field_path=f"measures[{index}].op")
         if operation == "sum_expression":
+            if "expression" not in measure:
+                raise RequestError(f"measures[{index}].expression is required", code="missing_field", field_path=f"measures[{index}].expression")
             expression = measure.get("expression")
-            if not isinstance(expression, str) or not expression.strip():
-                raise RequestError(f"measures[{index}].expression must be a non-empty string")
+            if not isinstance(expression, str):
+                raise RequestError(f"measures[{index}].expression must be a string", code="invalid_type", field_path=f"measures[{index}].expression")
+            if not expression.strip():
+                raise RequestError(f"measures[{index}].expression must not be empty", code="invalid_value", field_path=f"measures[{index}].expression")
         elif operation != "count_rows":
             _field_spec(measure, f"measures[{index}]")
 
@@ -135,14 +154,14 @@ _MAX_JSON_NUMBER_TOKEN_LENGTH = 100_000
 
 
 def _reject_json_constant(token: str):
-    raise RequestError(f"Non-standard JSON numeric constant {token!r} is not allowed")
+    raise RequestError(f"Non-standard JSON numeric constant {token!r} is not allowed", code="invalid_json_constant")
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise RequestError(f"Duplicate JSON object key {key!r} is not allowed")
+            raise RequestError(f"Duplicate JSON object key {key!r} is not allowed", code="duplicate_json_key")
         result[key] = value
     return result
 
@@ -603,10 +622,20 @@ def _related_row(
 
 def _field_spec(value: Any, label: str) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise RequestError(f"{label} must be an object with non-empty string 'table' and 'column' fields")
+        raise RequestError(f"{label} must be an object with non-empty string 'table' and 'column' fields", code="invalid_type", field_path=label)
+    if "table" not in value:
+        raise RequestError(f"{label}.table is required", code="missing_field", field_path=f"{label}.table")
+    if "column" not in value:
+        raise RequestError(f"{label}.column is required", code="missing_field", field_path=f"{label}.column")
     table, column = value.get("table"), value.get("column")
-    if not isinstance(table, str) or not table.strip() or not isinstance(column, str) or not column.strip():
-        raise RequestError(f"{label} must be an object with non-empty string 'table' and 'column' fields")
+    if not isinstance(table, str):
+        raise RequestError(f"{label}.table must be a string", code="invalid_type", field_path=f"{label}.table")
+    if not table.strip():
+        raise RequestError(f"{label}.table must not be empty", code="invalid_value", field_path=f"{label}.table")
+    if not isinstance(column, str):
+        raise RequestError(f"{label}.column must be a string", code="invalid_type", field_path=f"{label}.column")
+    if not column.strip():
+        raise RequestError(f"{label}.column must not be empty", code="invalid_value", field_path=f"{label}.column")
     return {"table": table, "column": column}
 
 
@@ -895,7 +924,7 @@ def aggregate(config: dict[str, Any], tables: dict[str, list[dict[str, Any]]]) -
 
 def run_request(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(config, dict):
-        raise RequestError("Request root must be a JSON object")
+        raise RequestError("Request root must be a JSON object", code="invalid_type", field_path="$")
     action = _validate_request_keys(config)
     _sample_policy(config)
     if action == "aggregate":
@@ -1006,6 +1035,14 @@ def main(argv: list[str] | None = None) -> int:
         result = run_request(config)
     except (OSError, json.JSONDecodeError, RequestError) as exc:
         result = {"valid": False, "status": "error", "error": str(exc)}
+        if isinstance(exc, RequestError):
+            result["error_code"] = exc.code
+            if exc.field_path is not None:
+                result["error_path"] = exc.field_path
+        elif isinstance(exc, json.JSONDecodeError):
+            result["error_code"] = "invalid_json"
+        else:
+            result["error_code"] = "input_error"
         print(f"Error: {exc}", file=sys.stderr)
         exit_code = 2
     else:

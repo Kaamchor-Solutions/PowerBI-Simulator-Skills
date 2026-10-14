@@ -343,7 +343,9 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertIn("Duplicate JSON object key 'action'", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
-        self.assertFalse(json.loads(completed.stdout)["valid"])
+        payload = json.loads(completed.stdout)
+        self.assertFalse(payload["valid"])
+        self.assertEqual(payload["error_code"], "duplicate_json_key")
 
     def test_duplicate_json_object_member_is_a_clean_report_cli_error(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -358,6 +360,19 @@ class AnalyzeTests(unittest.TestCase):
         self.assertIn("Duplicate JSON object key 'analyses'", completed.stderr)
         self.assertNotIn("Traceback", completed.stderr)
         self.assertFalse(output.exists())
+
+    def test_malformed_json_cli_includes_stable_invalid_json_code(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "request.json"
+            config.write_text('{"action":', encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config)],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Error:", completed.stderr)
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["error_code"], "invalid_json")
 
     def test_extreme_json_exponent_becomes_a_clear_cli_error(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -736,9 +751,9 @@ class AnalyzeTests(unittest.TestCase):
         invalid_requests = (
             ({"group_by": {}}, r"'group_by' must be a list"),
             ({"group_by": [{"table": [], "column": "Amount"}]}, r"group_by\[0\].*string"),
-            ({"group_by": [{"table": " ", "column": "Amount"}]}, r"group_by\[0\].*non-empty string"),
+            ({"group_by": [{"table": " ", "column": "Amount"}]}, r"group_by\[0\]\.table must not be empty"),
             ({"filters": [{"table": "Sales", "column": {}, "op": "eq", "value": 1}]}, r"filters\[0\].*string"),
-            ({"measures": [{"name": "Total", "op": "sum", "table": "Sales"}]}, r"measures\[0\].*string"),
+            ({"measures": [{"name": "Total", "op": "sum", "table": "Sales"}]}, r"measures\[0\]\.column is required"),
             ({"measures": [{"name": "", "op": "count_rows"}]}, r"measures\[0\]\.name"),
             ({"measures": [{"name": "Rows", "op": "count_rows"}, {"name": "Rows", "op": "count_rows"}]}, r"Duplicate measure name at measures\[1\]\.name"),
             ({"measures": [{"name": "Expression", "op": "sum_expression", "expression": []}]}, r"measures\[0\]\.expression"),
@@ -750,6 +765,21 @@ class AnalyzeTests(unittest.TestCase):
                 with self.subTest(extra=extra):
                     with self.assertRaisesRegex(analyze.RequestError, expected):
                         analyze.run_request(request)
+
+    def test_duplicate_measure_name_has_stable_error_metadata(self):
+        request = {
+            "action": "aggregate",
+            "tables": {"Sales": {"file": "/path/that/must/not/be/opened.csv"}},
+            "fact_table": "Sales",
+            "measures": [
+                {"name": "Rows", "op": "count_rows"},
+                {"name": "Rows", "op": "count_rows"},
+            ],
+        }
+        with self.assertRaises(analyze.RequestError) as context:
+            analyze.run_request(request)
+        self.assertEqual(context.exception.code, "duplicate_name")
+        self.assertEqual(context.exception.field_path, "measures[1].name")
 
     def test_explicit_null_filter_value_matches_blank_values(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -783,6 +813,27 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(process.returncode, 2)
         self.assertIn("measures[0].op must be a string", process.stderr)
         self.assertNotIn("Traceback", process.stderr)
+        payload = json.loads(process.stdout)
+        self.assertEqual(payload["error_code"], "invalid_type")
+        self.assertEqual(payload["error_path"], "measures[0].op")
+
+    def test_unsupported_measure_operation_cli_includes_stable_code_and_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config_path = Path(temp) / "request.json"
+            config_path.write_text(json.dumps({
+                "action": "aggregate", "tables": TABLES, "relationships": RELATIONSHIPS,
+                "fact_table": "Orders", "measures": [{"name": "Rows", "op": "median"}],
+            }), encoding="utf-8")
+            process = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config_path)],
+                capture_output=True, text=True, check=False,
+            )
+        self.assertEqual(process.returncode, 2)
+        self.assertNotIn("Traceback", process.stderr)
+        self.assertTrue(process.stderr.startswith("Error: Unsupported measures[0].op"))
+        payload = json.loads(process.stdout)
+        self.assertEqual(payload["error_code"], "unsupported_operation")
+        self.assertEqual(payload["error_path"], "measures[0].op")
 
     def test_unknown_top_level_filter_typo_is_rejected_before_file_io(self):
         request = {

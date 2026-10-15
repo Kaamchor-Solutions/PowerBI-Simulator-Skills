@@ -19,6 +19,7 @@
 - Catch quoted currency values and approximate compact numbers such as `$4.2k`, while keeping explicit no-result refusals as controls.
 - Add a configurable per-request source-file byte limit with a 128 MiB default and 256 MiB hard maximum; reject oversized inputs before parsing.
 - Add a configurable per-file row-record limit (100,000 default; 250,000 maximum), enforced during CSV/XLSX iteration, and avoid materializing a second XLSX row list.
+- Add a configurable header-width limit (256 columns default; 4,096 maximum), rejected before CSV/XLSX data rows are read.
 - Add a standard-library deterministic archive builder with fixed metadata, sorted paths, exclusions, atomic output, and repeat-build verification; cover it with unit tests and README instructions.
 - Add a local 360-degree smoke-test record with exercised checks, unrun platform/model gaps, and release boundaries.
 - Finalize the release citation metadata and standard MIT license; publish the package at Kaamchor-Solutions/PowerBI-Simulator-Skills.

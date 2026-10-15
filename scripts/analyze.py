@@ -61,6 +61,8 @@ _DEFAULT_MAX_SOURCE_BYTES = 128 * 1024 * 1024
 _MAX_CONFIGURABLE_SOURCE_BYTES = 256 * 1024 * 1024
 _DEFAULT_MAX_ROWS = 100_000
 _MAX_CONFIGURABLE_ROWS = 250_000
+_DEFAULT_MAX_COLUMNS = 256
+_MAX_CONFIGURABLE_COLUMNS = 4096
 _MAX_XLSX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 
 
@@ -83,11 +85,11 @@ def _validate_request_keys(config: dict[str, Any]) -> str:
     return action
 
 
-def _request_resource_limits(config: dict[str, Any]) -> tuple[int, int]:
+def _request_resource_limits(config: dict[str, Any]) -> tuple[int, int, int]:
     limits = config.get("resource_limits", {})
     if not isinstance(limits, dict):
         raise RequestError("'resource_limits' must be an object", code="invalid_type", field_path="resource_limits")
-    supported = {"max_source_bytes", "max_rows"}
+    supported = {"max_source_bytes", "max_rows", "max_columns"}
     unknown = sorted((key for key in limits if key not in supported), key=str)
     if unknown:
         raise RequestError(
@@ -99,6 +101,7 @@ def _request_resource_limits(config: dict[str, Any]) -> tuple[int, int]:
     for name, default, maximum in (
         ("max_source_bytes", _DEFAULT_MAX_SOURCE_BYTES, _MAX_CONFIGURABLE_SOURCE_BYTES),
         ("max_rows", _DEFAULT_MAX_ROWS, _MAX_CONFIGURABLE_ROWS),
+        ("max_columns", _DEFAULT_MAX_COLUMNS, _MAX_CONFIGURABLE_COLUMNS),
     ):
         limit = limits.get(name, default)
         field_path = f"resource_limits.{name}"
@@ -111,7 +114,7 @@ def _request_resource_limits(config: dict[str, Any]) -> tuple[int, int]:
                 field_path=field_path,
             )
         checked[name] = limit
-    return checked["max_source_bytes"], checked["max_rows"]
+    return checked["max_source_bytes"], checked["max_rows"], checked["max_columns"]
 
 
 def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
@@ -330,7 +333,9 @@ def _headers_and_rows(
     table_name: str,
     *,
     max_rows: int = _DEFAULT_MAX_ROWS,
+    max_columns: int = _DEFAULT_MAX_COLUMNS,
 ) -> TableRows:
+    _check_column_count(table_name, len(headers), max_columns)
     clean_headers = [str(h).strip() if h is not None else "" for h in headers]
     if not clean_headers or any(not name for name in clean_headers):
         raise RequestError(f"Table {table_name!r} needs a non-empty header row")
@@ -388,12 +393,22 @@ def _check_row_count(table_name: str, data_row_number: int, max_rows: int) -> No
         )
 
 
+def _check_column_count(table_name: str, column_count: int, max_columns: int) -> None:
+    if column_count > max_columns:
+        raise RequestError(
+            f"Input for table {table_name!r} exceeds maximum column count ({max_columns}) with {column_count} header columns",
+            code="resource_limit",
+            field_path=f"tables.{table_name}.file",
+        )
+
+
 def load_table(
     table_name: str,
     spec: dict[str, Any],
     *,
     max_source_bytes: int = _DEFAULT_MAX_SOURCE_BYTES,
     max_rows: int = _DEFAULT_MAX_ROWS,
+    max_columns: int = _DEFAULT_MAX_COLUMNS,
 ) -> list[dict[str, Any]]:
     if not isinstance(spec, dict) or not isinstance(spec.get("file"), str):
         raise RequestError(f"Table {table_name!r} must define a string 'file' path")
@@ -412,6 +427,7 @@ def load_table(
                 except StopIteration as exc:
                     raise RequestError(f"Input file is empty: {path}") from exc
                 headers = [str(name).strip() for name in headers]
+                _check_column_count(table_name, len(headers), max_columns)
                 if not headers or any(not str(h).strip() for h in headers):
                     raise RequestError(f"Input file has a blank header: {path}")
                 if len(headers) != len(set(headers)):
@@ -456,7 +472,7 @@ def load_table(
                 headers = list(next(iterator))
             except StopIteration as exc:
                 raise RequestError(f"Excel sheet is empty: {path}") from exc
-            return _headers_and_rows(headers, iterator, table_name, max_rows=max_rows)
+            return _headers_and_rows(headers, iterator, table_name, max_rows=max_rows, max_columns=max_columns)
         except RequestError:
             raise
         except Exception as exc:
@@ -468,7 +484,7 @@ def load_table(
 
 
 def load_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    max_source_bytes, max_rows = _request_resource_limits(config)
+    max_source_bytes, max_rows, max_columns = _request_resource_limits(config)
     specs = config.get("tables")
     if not isinstance(specs, dict) or not specs:
         raise RequestError("Request must contain a non-empty 'tables' object")
@@ -476,7 +492,13 @@ def load_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     for name, spec in specs.items():
         if not isinstance(name, str) or not name.strip():
             raise RequestError("Table names must be non-empty strings")
-        tables[name] = load_table(name, spec, max_source_bytes=max_source_bytes, max_rows=max_rows)
+        tables[name] = load_table(
+            name,
+            spec,
+            max_source_bytes=max_source_bytes,
+            max_rows=max_rows,
+            max_columns=max_columns,
+        )
     return tables
 
 

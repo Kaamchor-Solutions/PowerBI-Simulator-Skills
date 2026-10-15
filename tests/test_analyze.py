@@ -754,6 +754,17 @@ class AnalyzeTests(unittest.TestCase):
             analyze.run_request(request)
         self.assertEqual(row_range_error.exception.code, "invalid_value")
 
+        request["resource_limits"] = {"max_columns": True}
+        with self.assertRaisesRegex(analyze.RequestError, "max_columns.*integer") as column_type_error:
+            analyze.run_request(request)
+        self.assertEqual(column_type_error.exception.code, "invalid_type")
+        self.assertEqual(column_type_error.exception.field_path, "resource_limits.max_columns")
+
+        request["resource_limits"]["max_columns"] = analyze._MAX_CONFIGURABLE_COLUMNS + 1
+        with self.assertRaisesRegex(analyze.RequestError, "max_columns.*from 1") as column_range_error:
+            analyze.run_request(request)
+        self.assertEqual(column_range_error.exception.code, "invalid_value")
+
         request["resource_limits"] = {"max_groups": 100}
         with self.assertRaisesRegex(analyze.RequestError, "Unknown resource limit.*max_groups") as unknown:
             analyze.run_request(request)
@@ -814,6 +825,40 @@ class AnalyzeTests(unittest.TestCase):
                     analyze.load_table("Sales", {"file": str(path)}, max_rows=1)
             self.assertEqual(error.exception.code, "resource_limit")
             self.assertFalse(isinstance(convert_rows.call_args.args[1], list))
+
+    def test_configurable_column_limit_rejects_csv_overflow_and_accepts_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "wide.csv"
+            path.write_text("A,B,C\n1,2,3,4\n", encoding="utf-8")
+            request = {
+                "action": "inventory",
+                "tables": {"Sales": {"file": str(path)}},
+                "resource_limits": {"max_columns": 2},
+            }
+            with self.assertRaisesRegex(analyze.RequestError, "maximum column count") as error:
+                analyze.run_request(request)
+            self.assertEqual(error.exception.code, "resource_limit")
+            self.assertEqual(error.exception.field_path, "tables.Sales.file")
+
+            request["resource_limits"]["max_columns"] = 3
+            path.write_text("A,B,C\n1,2,3\n", encoding="utf-8")
+            result = analyze.run_request(request)
+            self.assertEqual(result["tables"]["Sales"]["columns"], 3)
+
+    def test_xlsx_column_limit_rejects_wide_header(self):
+        import openpyxl
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "wide.xlsx"
+            workbook = openpyxl.Workbook()
+            workbook.active.append(["A", "B", "C"])
+            workbook.active.append([1, 2, 3])
+            workbook.save(path)
+            workbook.close()
+
+            with self.assertRaisesRegex(analyze.RequestError, "maximum column count") as error:
+                analyze.load_table("Sales", {"file": str(path)}, max_columns=2)
+        self.assertEqual(error.exception.code, "resource_limit")
+        self.assertEqual(error.exception.field_path, "tables.Sales.file")
 
     def test_corrupt_xlsx_becomes_clean_cli_and_report_error(self):
         with tempfile.TemporaryDirectory() as temp:

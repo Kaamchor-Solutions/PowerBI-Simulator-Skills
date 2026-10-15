@@ -17,6 +17,7 @@
 - Catch quoted number-word totals, implied DAX success, “contains” PBIX inventories, incomplete/ready report claims, passive upload modifiers, and past-tense refresh claims.
 - Catch common numeric-result constructions such as “comes to,” “amounts to,” “totals,” and “works out to,” with a safe no-result control.
 - Catch quoted currency values and approximate compact numbers such as `$4.2k`, while keeping explicit no-result refusals as controls.
+- Add a configurable per-request source-file byte limit with a 128 MiB default and 256 MiB hard maximum; reject oversized inputs before parsing.
 - Add a standard-library deterministic archive builder with fixed metadata, sorted paths, exclusions, atomic output, and repeat-build verification; cover it with unit tests and README instructions.
 - Add a local 360-degree smoke-test record with exercised checks, unrun platform/model gaps, and release boundaries.
 - Finalize the release citation metadata and standard MIT license; publish the package at Kaamchor-Solutions/PowerBI-Simulator-Skills.

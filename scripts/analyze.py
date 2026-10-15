@@ -42,12 +42,13 @@ class RequestError(ValueError):
 
 
 _SAMPLE_POLICY_KEYS = frozenset({"include_samples", "sample_limit"})
+_RESOURCE_LIMIT_KEYS = frozenset({"resource_limits"})
 _REQUEST_KEYS = {
-    "inventory": frozenset({"action", "tables"}) | _SAMPLE_POLICY_KEYS,
-    "model_audit": frozenset({"action", "tables", "relationships"}) | _SAMPLE_POLICY_KEYS,
+    "inventory": frozenset({"action", "tables"}) | _SAMPLE_POLICY_KEYS | _RESOURCE_LIMIT_KEYS,
+    "model_audit": frozenset({"action", "tables", "relationships"}) | _SAMPLE_POLICY_KEYS | _RESOURCE_LIMIT_KEYS,
     "aggregate": frozenset({
         "action", "tables", "relationships", "fact_table", "group_by", "filters", "measures",
-    }) | _SAMPLE_POLICY_KEYS,
+    }) | _SAMPLE_POLICY_KEYS | _RESOURCE_LIMIT_KEYS,
 }
 _FILTER_OPERATIONS = frozenset({"eq", "neq", "in"})
 _MEASURE_OPERATIONS = frozenset({
@@ -56,6 +57,8 @@ _MEASURE_OPERATIONS = frozenset({
 _MAX_EXPRESSION_LENGTH = 4096
 _MAX_EXPRESSION_AST_NODES = 1024
 _MAX_EXPRESSION_AST_DEPTH = 64
+_DEFAULT_MAX_SOURCE_BYTES = 128 * 1024 * 1024
+_MAX_CONFIGURABLE_SOURCE_BYTES = 256 * 1024 * 1024
 _MAX_XLSX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 
 
@@ -76,6 +79,33 @@ def _validate_request_keys(config: dict[str, Any]) -> str:
             message += f"; did you mean {suggestion[0]!r}?"
         raise RequestError(message, code="unknown_field", field_path=str(key))
     return action
+
+
+def _source_byte_limit(config: dict[str, Any]) -> int:
+    limits = config.get("resource_limits", {})
+    if not isinstance(limits, dict):
+        raise RequestError("'resource_limits' must be an object", code="invalid_type", field_path="resource_limits")
+    unknown = sorted((key for key in limits if key != "max_source_bytes"), key=str)
+    if unknown:
+        raise RequestError(
+            f"Unknown resource limit {unknown[0]!r}; supported limit: 'max_source_bytes'",
+            code="unknown_field",
+            field_path=f"resource_limits.{unknown[0]}",
+        )
+    limit = limits.get("max_source_bytes", _DEFAULT_MAX_SOURCE_BYTES)
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise RequestError(
+            "'resource_limits.max_source_bytes' must be an integer",
+            code="invalid_type",
+            field_path="resource_limits.max_source_bytes",
+        )
+    if not 1 <= limit <= _MAX_CONFIGURABLE_SOURCE_BYTES:
+        raise RequestError(
+            f"'resource_limits.max_source_bytes' must be from 1 to {_MAX_CONFIGURABLE_SOURCE_BYTES}",
+            code="invalid_value",
+            field_path="resource_limits.max_source_bytes",
+        )
+    return limit
 
 
 def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
@@ -319,7 +349,29 @@ def _check_xlsx_archive_size(path: Path) -> None:
         )
 
 
-def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
+def _check_source_size(path: Path, table_name: str, max_source_bytes: int) -> None:
+    try:
+        source_size = path.stat().st_size
+    except OSError as exc:
+        raise RequestError(
+            f"Could not inspect input file for table {table_name!r}: {exc}",
+            code="input_error",
+            field_path=f"tables.{table_name}.file",
+        ) from exc
+    if source_size > max_source_bytes:
+        raise RequestError(
+            f"Source file for table {table_name!r} is {source_size} bytes; maximum is {max_source_bytes} bytes",
+            code="resource_limit",
+            field_path=f"tables.{table_name}.file",
+        )
+
+
+def load_table(
+    table_name: str,
+    spec: dict[str, Any],
+    *,
+    max_source_bytes: int = _DEFAULT_MAX_SOURCE_BYTES,
+) -> list[dict[str, Any]]:
     if not isinstance(spec, dict) or not isinstance(spec.get("file"), str):
         raise RequestError(f"Table {table_name!r} must define a string 'file' path")
     path = Path(spec["file"]).expanduser()
@@ -327,6 +379,7 @@ def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
         raise RequestError(f"Input file for table {table_name!r} was not found: {path}")
     suffix = path.suffix.lower()
     if suffix in {".csv", ".tsv", ".tab"}:
+        _check_source_size(path, table_name, max_source_bytes)
         delimiter = "\t" if suffix in {".tsv", ".tab"} else ","
         try:
             with path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -354,6 +407,7 @@ def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
         except csv.Error as exc:
             raise RequestError(f"Could not parse {path}: {exc}") from exc
     if suffix == ".xlsx":
+        _check_source_size(path, table_name, max_source_bytes)
         _check_xlsx_archive_size(path)
         try:
             from openpyxl import load_workbook
@@ -390,6 +444,7 @@ def load_table(table_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def load_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    max_source_bytes = _source_byte_limit(config)
     specs = config.get("tables")
     if not isinstance(specs, dict) or not specs:
         raise RequestError("Request must contain a non-empty 'tables' object")
@@ -397,7 +452,7 @@ def load_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     for name, spec in specs.items():
         if not isinstance(name, str) or not name.strip():
             raise RequestError("Table names must be non-empty strings")
-        tables[name] = load_table(name, spec)
+        tables[name] = load_table(name, spec, max_source_bytes=max_source_bytes)
     return tables
 
 

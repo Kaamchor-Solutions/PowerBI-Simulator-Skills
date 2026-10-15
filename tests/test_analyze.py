@@ -699,6 +699,56 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "resource_limit")
         load_workbook.assert_not_called()
 
+    def test_configurable_source_byte_limit_precedes_open_and_accepts_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "source.csv"
+            source = b"Key\nvalue\n"
+            path.write_bytes(source)
+            request = {
+                "action": "inventory",
+                "tables": {"Sales": {"file": str(path)}},
+                "resource_limits": {"max_source_bytes": len(source) - 1},
+            }
+            with patch.object(Path, "open", side_effect=AssertionError("source opened before size rejection")):
+                with self.assertRaisesRegex(analyze.RequestError, "bytes.*maximum") as error:
+                    analyze.run_request(request)
+            self.assertEqual(error.exception.code, "resource_limit")
+            self.assertEqual(error.exception.field_path, "tables.Sales.file")
+
+            request["resource_limits"]["max_source_bytes"] = len(source)
+            result = analyze.run_request(request)
+            self.assertEqual(result["tables"]["Sales"]["rows"], 1)
+
+            request.pop("resource_limits")
+            with patch.object(analyze, "_DEFAULT_MAX_SOURCE_BYTES", len(source) - 1):
+                with patch.object(Path, "open", side_effect=AssertionError("source opened before default-limit rejection")):
+                    with self.assertRaises(analyze.RequestError) as default_error:
+                        analyze.run_request(request)
+            self.assertEqual(default_error.exception.code, "resource_limit")
+
+    def test_invalid_source_limit_is_rejected_before_input_lookup(self):
+        request = {
+            "action": "inventory",
+            "tables": {"Sales": {"file": "/path/that/must/not/be/opened.csv"}},
+            "resource_limits": {"max_source_bytes": True},
+        }
+        with self.assertRaisesRegex(analyze.RequestError, "max_source_bytes.*integer") as error:
+            analyze.run_request(request)
+        self.assertEqual(error.exception.code, "invalid_type")
+        self.assertEqual(error.exception.field_path, "resource_limits.max_source_bytes")
+
+        request["resource_limits"]["max_source_bytes"] = analyze._MAX_CONFIGURABLE_SOURCE_BYTES + 1
+        with self.assertRaisesRegex(analyze.RequestError, "max_source_bytes.*from 1") as out_of_range:
+            analyze.run_request(request)
+        self.assertEqual(out_of_range.exception.code, "invalid_value")
+        self.assertEqual(out_of_range.exception.field_path, "resource_limits.max_source_bytes")
+
+        request["resource_limits"] = {"max_rows": 100}
+        with self.assertRaisesRegex(analyze.RequestError, "Unknown resource limit.*max_rows") as unknown:
+            analyze.run_request(request)
+        self.assertEqual(unknown.exception.code, "unknown_field")
+        self.assertEqual(unknown.exception.field_path, "resource_limits.max_rows")
+
     def test_corrupt_xlsx_becomes_clean_cli_and_report_error(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)

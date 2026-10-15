@@ -29,7 +29,7 @@ from decimal import (
     localcontext,
 )
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 
 class RequestError(ValueError):
@@ -59,6 +59,8 @@ _MAX_EXPRESSION_AST_NODES = 1024
 _MAX_EXPRESSION_AST_DEPTH = 64
 _DEFAULT_MAX_SOURCE_BYTES = 128 * 1024 * 1024
 _MAX_CONFIGURABLE_SOURCE_BYTES = 256 * 1024 * 1024
+_DEFAULT_MAX_ROWS = 100_000
+_MAX_CONFIGURABLE_ROWS = 250_000
 _MAX_XLSX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 
 
@@ -81,31 +83,35 @@ def _validate_request_keys(config: dict[str, Any]) -> str:
     return action
 
 
-def _source_byte_limit(config: dict[str, Any]) -> int:
+def _request_resource_limits(config: dict[str, Any]) -> tuple[int, int]:
     limits = config.get("resource_limits", {})
     if not isinstance(limits, dict):
         raise RequestError("'resource_limits' must be an object", code="invalid_type", field_path="resource_limits")
-    unknown = sorted((key for key in limits if key != "max_source_bytes"), key=str)
+    supported = {"max_source_bytes", "max_rows"}
+    unknown = sorted((key for key in limits if key not in supported), key=str)
     if unknown:
         raise RequestError(
-            f"Unknown resource limit {unknown[0]!r}; supported limit: 'max_source_bytes'",
+            f"Unknown resource limit {unknown[0]!r}; supported limits: {sorted(supported)}",
             code="unknown_field",
             field_path=f"resource_limits.{unknown[0]}",
         )
-    limit = limits.get("max_source_bytes", _DEFAULT_MAX_SOURCE_BYTES)
-    if isinstance(limit, bool) or not isinstance(limit, int):
-        raise RequestError(
-            "'resource_limits.max_source_bytes' must be an integer",
-            code="invalid_type",
-            field_path="resource_limits.max_source_bytes",
-        )
-    if not 1 <= limit <= _MAX_CONFIGURABLE_SOURCE_BYTES:
-        raise RequestError(
-            f"'resource_limits.max_source_bytes' must be from 1 to {_MAX_CONFIGURABLE_SOURCE_BYTES}",
-            code="invalid_value",
-            field_path="resource_limits.max_source_bytes",
-        )
-    return limit
+    checked: dict[str, int] = {}
+    for name, default, maximum in (
+        ("max_source_bytes", _DEFAULT_MAX_SOURCE_BYTES, _MAX_CONFIGURABLE_SOURCE_BYTES),
+        ("max_rows", _DEFAULT_MAX_ROWS, _MAX_CONFIGURABLE_ROWS),
+    ):
+        limit = limits.get(name, default)
+        field_path = f"resource_limits.{name}"
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise RequestError(f"'{field_path}' must be an integer", code="invalid_type", field_path=field_path)
+        if not 1 <= limit <= maximum:
+            raise RequestError(
+                f"'{field_path}' must be from 1 to {maximum}",
+                code="invalid_value",
+                field_path=field_path,
+            )
+        checked[name] = limit
+    return checked["max_source_bytes"], checked["max_rows"]
 
 
 def _sample_policy(config: dict[str, Any]) -> tuple[bool, int]:
@@ -318,7 +324,13 @@ def _json_dumps(value: Any, *, ensure_ascii: bool = False, indent: int | None = 
     return encode(value)
 
 
-def _headers_and_rows(headers: list[Any], data_rows: list[tuple[Any, ...]], table_name: str) -> TableRows:
+def _headers_and_rows(
+    headers: list[Any],
+    data_rows: Iterable[tuple[Any, ...]],
+    table_name: str,
+    *,
+    max_rows: int = _DEFAULT_MAX_ROWS,
+) -> TableRows:
     clean_headers = [str(h).strip() if h is not None else "" for h in headers]
     if not clean_headers or any(not name for name in clean_headers):
         raise RequestError(f"Table {table_name!r} needs a non-empty header row")
@@ -326,6 +338,7 @@ def _headers_and_rows(headers: list[Any], data_rows: list[tuple[Any, ...]], tabl
         raise RequestError(f"Table {table_name!r} has duplicate column names")
     rows: list[dict[str, Any]] = []
     for row_number, values in enumerate(data_rows, start=2):
+        _check_row_count(table_name, row_number - 1, max_rows)
         if len(values) > len(clean_headers) and any(v is not None for v in values[len(clean_headers):]):
             raise RequestError(f"Table {table_name!r}, row {row_number} has more values than columns")
         padded = list(values[:len(clean_headers)]) + [None] * max(0, len(clean_headers) - len(values))
@@ -366,11 +379,21 @@ def _check_source_size(path: Path, table_name: str, max_source_bytes: int) -> No
         )
 
 
+def _check_row_count(table_name: str, data_row_number: int, max_rows: int) -> None:
+    if data_row_number > max_rows:
+        raise RequestError(
+            f"Input for table {table_name!r} exceeds maximum row count ({max_rows}) at data row {data_row_number}",
+            code="resource_limit",
+            field_path=f"tables.{table_name}.file",
+        )
+
+
 def load_table(
     table_name: str,
     spec: dict[str, Any],
     *,
     max_source_bytes: int = _DEFAULT_MAX_SOURCE_BYTES,
+    max_rows: int = _DEFAULT_MAX_ROWS,
 ) -> list[dict[str, Any]]:
     if not isinstance(spec, dict) or not isinstance(spec.get("file"), str):
         raise RequestError(f"Table {table_name!r} must define a string 'file' path")
@@ -395,6 +418,7 @@ def load_table(
                     raise RequestError(f"Input file has duplicate column names: {path}")
                 rows = []
                 for line_number, values in enumerate(reader, start=2):
+                    _check_row_count(table_name, line_number - 1, max_rows)
                     if len(values) > len(headers):
                         raise RequestError(f"{path}, row {line_number} has more values than headers")
                     if not values or not any(value.strip() for value in values):
@@ -432,7 +456,7 @@ def load_table(
                 headers = list(next(iterator))
             except StopIteration as exc:
                 raise RequestError(f"Excel sheet is empty: {path}") from exc
-            return _headers_and_rows(headers, list(iterator), table_name)
+            return _headers_and_rows(headers, iterator, table_name, max_rows=max_rows)
         except RequestError:
             raise
         except Exception as exc:
@@ -444,7 +468,7 @@ def load_table(
 
 
 def load_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    max_source_bytes = _source_byte_limit(config)
+    max_source_bytes, max_rows = _request_resource_limits(config)
     specs = config.get("tables")
     if not isinstance(specs, dict) or not specs:
         raise RequestError("Request must contain a non-empty 'tables' object")
@@ -452,7 +476,7 @@ def load_tables(config: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     for name, spec in specs.items():
         if not isinstance(name, str) or not name.strip():
             raise RequestError("Table names must be non-empty strings")
-        tables[name] = load_table(name, spec, max_source_bytes=max_source_bytes)
+        tables[name] = load_table(name, spec, max_source_bytes=max_source_bytes, max_rows=max_rows)
     return tables
 
 

@@ -743,11 +743,77 @@ class AnalyzeTests(unittest.TestCase):
         self.assertEqual(out_of_range.exception.code, "invalid_value")
         self.assertEqual(out_of_range.exception.field_path, "resource_limits.max_source_bytes")
 
-        request["resource_limits"] = {"max_rows": 100}
-        with self.assertRaisesRegex(analyze.RequestError, "Unknown resource limit.*max_rows") as unknown:
+        request["resource_limits"] = {"max_rows": True}
+        with self.assertRaisesRegex(analyze.RequestError, "max_rows.*integer") as row_type_error:
+            analyze.run_request(request)
+        self.assertEqual(row_type_error.exception.code, "invalid_type")
+        self.assertEqual(row_type_error.exception.field_path, "resource_limits.max_rows")
+
+        request["resource_limits"]["max_rows"] = 0
+        with self.assertRaisesRegex(analyze.RequestError, "max_rows.*from 1") as row_range_error:
+            analyze.run_request(request)
+        self.assertEqual(row_range_error.exception.code, "invalid_value")
+
+        request["resource_limits"] = {"max_groups": 100}
+        with self.assertRaisesRegex(analyze.RequestError, "Unknown resource limit.*max_groups") as unknown:
             analyze.run_request(request)
         self.assertEqual(unknown.exception.code, "unknown_field")
-        self.assertEqual(unknown.exception.field_path, "resource_limits.max_rows")
+        self.assertEqual(unknown.exception.field_path, "resource_limits.max_groups")
+
+    def test_configurable_row_limit_rejects_csv_overflow_and_accepts_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "rows.csv"
+            path.write_text("Key\nA\nB\nC\n", encoding="utf-8")
+            request = {
+                "action": "inventory",
+                "tables": {"Sales": {"file": str(path)}},
+                "resource_limits": {"max_rows": 2},
+            }
+            with self.assertRaisesRegex(analyze.RequestError, "maximum row count") as error:
+                analyze.run_request(request)
+            self.assertEqual(error.exception.code, "resource_limit")
+            self.assertEqual(error.exception.field_path, "tables.Sales.file")
+
+            config_path = Path(temp) / "request.json"
+            config_path.write_text(json.dumps(request), encoding="utf-8")
+            cli = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze.py"), "--config", str(config_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(cli.returncode, 2)
+            cli_result = json.loads(cli.stdout)
+            self.assertEqual(cli_result["error_code"], "resource_limit")
+            self.assertEqual(cli_result["error_path"], "tables.Sales.file")
+
+            request["resource_limits"]["max_rows"] = 3
+            result = analyze.run_request(request)
+            self.assertEqual(result["tables"]["Sales"]["rows"], 3)
+
+            request.pop("resource_limits")
+            with patch.object(analyze, "_DEFAULT_MAX_ROWS", 2):
+                with self.assertRaisesRegex(analyze.RequestError, "maximum row count") as default_error:
+                    analyze.run_request(request)
+            self.assertEqual(default_error.exception.code, "resource_limit")
+
+    def test_xlsx_row_limit_consumes_rows_lazily(self):
+        import openpyxl
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "rows.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.append(["Key"])
+            sheet.append(["A"])
+            sheet.append(["B"])
+            workbook.save(path)
+            workbook.close()
+
+            with patch.object(analyze, "_headers_and_rows", wraps=analyze._headers_and_rows) as convert_rows:
+                with self.assertRaisesRegex(analyze.RequestError, "maximum row count") as error:
+                    analyze.load_table("Sales", {"file": str(path)}, max_rows=1)
+            self.assertEqual(error.exception.code, "resource_limit")
+            self.assertFalse(isinstance(convert_rows.call_args.args[1], list))
 
     def test_corrupt_xlsx_becomes_clean_cli_and_report_error(self):
         with tempfile.TemporaryDirectory() as temp:
